@@ -10,6 +10,7 @@ import {
   Settings,
   LogOut,
   Menu,
+  Bluetooth,
 } from 'lucide-react';
 
 import { useAuth } from '@/components/auth-provider';
@@ -29,6 +30,7 @@ import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 
 const navItems = [
   { href: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+  { href: '/connect-device', icon: Bluetooth, label: 'Connect Device' },
   { href: '/profile', icon: User, label: 'Profile & Emergency' },
   { href: '/settings', icon: Settings, label: 'SOS Settings' },
 ];
