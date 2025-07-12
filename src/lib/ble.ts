@@ -1,6 +1,63 @@
 // BLE Service for SHEILD - Smart Holistic Emergency & Intelligent Location Device
 // Implements complete BLE functionality for ESP32 device communication
 
+// TypeScript declarations for Web Bluetooth API
+declare global {
+    interface Navigator {
+        bluetooth: Bluetooth;
+    }
+
+    interface Bluetooth {
+        getAvailability(): Promise<boolean>;
+        requestDevice(options: RequestDeviceOptions): Promise<BluetoothDevice>;
+    }
+
+    interface RequestDeviceOptions {
+        filters?: BluetoothLEScanFilter[];
+        optionalServices?: string[];
+        acceptAllDevices?: boolean;
+    }
+
+    interface BluetoothLEScanFilter {
+        name?: string;
+        namePrefix?: string;
+        services?: string[];
+        manufacturerData?: ManufacturerDataFilter[];
+    }
+
+    interface ManufacturerDataFilter {
+        companyIdentifier: number;
+        dataPrefix?: BufferSource;
+        mask?: BufferSource;
+    }
+
+    interface BluetoothDevice {
+        id: string;
+        name?: string;
+        gatt?: BluetoothRemoteGATTServer;
+        addEventListener(type: string, listener: EventListener): void;
+    }
+
+    interface BluetoothRemoteGATTServer {
+        connect(): Promise<BluetoothRemoteGATTServer>;
+        disconnect(): void;
+        connected: boolean;
+        getPrimaryService(service: string): Promise<BluetoothRemoteGATTService>;
+    }
+
+    interface BluetoothRemoteGATTService {
+        getCharacteristic(characteristic: string): Promise<BluetoothRemoteGATTCharacteristic>;
+    }
+
+    interface BluetoothRemoteGATTCharacteristic {
+        value?: DataView;
+        startNotifications(): Promise<BluetoothRemoteGATTCharacteristic>;
+        stopNotifications(): Promise<BluetoothRemoteGATTCharacteristic>;
+        writeValue(value: BufferSource): Promise<void>;
+        addEventListener(type: string, listener: EventListener): void;
+    }
+}
+
 export interface BLEDevice {
     id: string;
     name: string;
@@ -233,7 +290,7 @@ class BLEService {
 
     // Handle incoming data from BLE device
     private handleDataReceived(event: Event): void {
-        const target = event.target as BluetoothRemoteGATTCharacteristic;
+        const target = event.target as unknown as BluetoothRemoteGATTCharacteristic;
         const value = target.value;
 
         if (!value) {
