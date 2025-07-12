@@ -1,11 +1,20 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Map, AdvancedMarker } from '@vis.gl/react-google-maps';
+import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents, Polyline } from 'react-leaflet';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Search, Navigation, MapPin, Route, Plus, Minus, Loader2 } from 'lucide-react';
+import { Search, Navigation, MapPin, Route, Plus, Minus, Loader2, AlertTriangle, Shield } from 'lucide-react';
+import * as L from 'leaflet';
+
+// Fix for default markers in Leaflet
+delete (L.Icon.Default.prototype as any)._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
+  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
+  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+});
 
 interface Position {
   lat: number;
@@ -17,14 +26,104 @@ interface RouteInfo {
   destination: string;
   distance?: string;
   duration?: string;
+  originCoords?: Position;
+  destinationCoords?: Position;
+}
+
+interface SafeRoute {
+  coordinates: [number, number][];
+  safety_rating?: number;
+  distance?: number;
+  duration?: number;
+}
+
+interface SafeRoutesResponse {
+  generated_at: string;
+  recommendation: {
+    reason: string;
+    recommended_route: number;
+  };
+  routes: SafeRoute[];
 }
 
 // Global location cache to prevent conflicts
 let globalLocationCache: { position: Position; timestamp: number } | null = null;
 const LOCATION_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
-export function MapView({ mapId }: { mapId?: string }) {
-  const [position, setPosition] = useState<Position>({ lat: 25.2486, lng: 83.1944 }); // Default to Lauda
+// Map event handlers component
+function MapEventHandlers({
+  onMapLoad,
+  position,
+  setPosition
+}: {
+  onMapLoad: (map: L.Map) => void;
+  position: Position;
+  setPosition: (pos: Position) => void;
+}) {
+  const map = useMap();
+  const isUpdatingRef = useRef(false);
+  const lastPositionRef = useRef<Position | null>(null);
+
+  // Call onMapLoad when map is available
+  useEffect(() => {
+    if (map) {
+      console.log('🗺️ Map instance available, calling onMapLoad');
+      onMapLoad(map);
+    }
+  }, [map, onMapLoad]);
+
+  const mapEvents = useMapEvents({
+    load: () => {
+      console.log('🗺️ Map load event triggered');
+      onMapLoad(map);
+    },
+    moveend: () => {
+      // Only update position if we're not currently updating from external source
+      if (!isUpdatingRef.current) {
+        const center = map.getCenter();
+        const newPosition = { lat: center.lat, lng: center.lng };
+
+        // Only update if position actually changed
+        if (!lastPositionRef.current ||
+          Math.abs(lastPositionRef.current.lat - newPosition.lat) > 0.000001 ||
+          Math.abs(lastPositionRef.current.lng - newPosition.lng) > 0.000001) {
+          lastPositionRef.current = newPosition;
+          console.log('🗺️ Map moved to:', newPosition);
+          setPosition(newPosition);
+        }
+      } else {
+        console.log('🗺️ Skipping position update (external update in progress)');
+      }
+    },
+  });
+
+  // Update map center when position changes from external source
+  useEffect(() => {
+    if (map && position) {
+      const currentCenter = map.getCenter();
+      const positionChanged = Math.abs(currentCenter.lat - position.lat) > 0.000001 ||
+        Math.abs(currentCenter.lng - position.lng) > 0.000001;
+
+      if (positionChanged) {
+        console.log('🗺️ External position update:', position);
+        isUpdatingRef.current = true;
+        map.setView([position.lat, position.lng], map.getZoom());
+        lastPositionRef.current = position;
+
+        // Reset the flag after a short delay
+        setTimeout(() => {
+          isUpdatingRef.current = false;
+          console.log('🗺️ External update complete');
+        }, 100);
+      }
+    }
+  }, [map, position.lat, position.lng]);
+
+  return null;
+}
+
+export function MapView() {
+  const [position, setPosition] = useState<Position>({ lat: 28.6139, lng: 77.2090 }); // Default to Delhi (Connaught Place area)
   const [error, setError] = useState<string | null>(null);
   const [routeInfo, setRouteInfo] = useState<RouteInfo>({
     origin: '',
@@ -33,8 +132,137 @@ export function MapView({ mapId }: { mapId?: string }) {
   const [showRouteForm, setShowRouteForm] = useState(false);
   const [isCalculating, setIsCalculating] = useState(false);
   const [isLocating, setIsLocating] = useState(false);
-  const [zoom, setZoom] = useState(17);
-  const mapRef = useRef<google.maps.Map | null>(null);
+  const [zoom, setZoom] = useState(13); // Better zoom level for Delhi city view
+  const [isUsingDefaultLocation, setIsUsingDefaultLocation] = useState(true);
+  const [safeRoutes, setSafeRoutes] = useState<SafeRoutesResponse | null>(null);
+  const [routePolylines, setRoutePolylines] = useState<L.Polyline[]>([]);
+  const mapRef = useRef<L.Map | null>(null);
+
+  // Function to fetch safe routes
+  const fetchSafeRoutes = async (start: Position, end: Position) => {
+    try {
+      console.log('🌐 Calling safe routes API with:', {
+        start_lat: start.lat,
+        start_lon: start.lng,
+        end_lat: end.lat,
+        end_lon: end.lng
+      });
+
+      const response = await fetch('https://safemaps.onrender.com/api/safe-routes', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          start_lat: start.lat,
+          start_lon: start.lng,
+          end_lat: end.lat,
+          end_lon: end.lng,
+          time_period: "day",
+          num_alternatives: 2
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log('🌐 Safe routes API response:', data);
+      return data as SafeRoutesResponse;
+    } catch (error: any) {
+      console.error('❌ Failed to fetch safe routes:', error);
+      throw error;
+    }
+  };
+
+  // Clear existing routes from map
+  const clearExistingRoutes = useCallback(() => {
+    if (mapRef.current) {
+      routePolylines.forEach(polyline => {
+        polyline.remove();
+      });
+      setRoutePolylines([]);
+    }
+  }, [routePolylines]);
+
+  // Draw routes on map
+  const drawRoutes = useCallback((routes: SafeRoute[], recommendedIndex: number) => {
+    console.log('🗺️ Attempting to draw routes, map ref:', mapRef.current);
+
+    if (!mapRef.current) {
+      console.error('❌ Map reference not available, retrying in 500ms...');
+      // Retry after a short delay
+      setTimeout(() => {
+        if (mapRef.current) {
+          console.log('🗺️ Map reference now available, retrying drawRoutes');
+          drawRoutes(routes, recommendedIndex);
+        } else {
+          console.error('❌ Map reference still not available after retry');
+        }
+      }, 500);
+      return;
+    }
+
+    console.log('🗺️ Drawing routes:', { routes, recommendedIndex });
+    clearExistingRoutes();
+
+    const newPolylines: L.Polyline[] = [];
+
+    routes.forEach((route, index) => {
+      const isRecommended = index === recommendedIndex;
+      const color = isRecommended ? '#3b82f6' : '#ef4444'; // blue for recommended, red for others
+      const weight = isRecommended ? 6 : 4;
+      const opacity = isRecommended ? 0.8 : 0.6;
+
+      // Convert coordinates to LatLng array
+      const latLngs = route.coordinates.map(coord => [coord[0], coord[1]] as L.LatLngExpression);
+      console.log(`🗺️ Route ${index} coordinates:`, latLngs);
+
+      if (latLngs.length > 0) {
+        const polyline = L.polyline(latLngs, {
+          color,
+          weight,
+          opacity,
+        });
+
+        // Add to map
+        polyline.addTo(mapRef.current!);
+        newPolylines.push(polyline);
+
+        // Add popup with safety information
+        const safetyRating = route.safety_rating || 0;
+        const distance = route.distance ? (route.distance / 1000).toFixed(1) : '?';
+        const duration = route.duration ? Math.round(route.duration / 60) : '?';
+
+        polyline.bindPopup(`
+          <div class="text-sm">
+            <div class="font-medium">${isRecommended ? '✨ Recommended Route' : 'Alternative Route'}</div>
+            <div>Safety Rating: ${safetyRating.toFixed(2)}</div>
+            <div>Distance: ${distance} km</div>
+            <div>Duration: ${duration} min</div>
+          </div>
+        `);
+
+        console.log(`🗺️ Route ${index} polyline added to map`);
+      } else {
+        console.warn(`⚠️ Route ${index} has no coordinates`);
+      }
+    });
+
+    setRoutePolylines(newPolylines);
+    console.log('🗺️ All polylines added:', newPolylines.length);
+
+    // Fit map bounds to show all routes
+    if (routes.length > 0) {
+      const allCoordinates = routes.flatMap(route => route.coordinates);
+      if (allCoordinates.length > 0) {
+        const bounds = L.latLngBounds(allCoordinates.map(coord => [coord[0], coord[1]]));
+        mapRef.current.fitBounds(bounds, { padding: [50, 50] });
+        console.log('🗺️ Map bounds adjusted to show routes');
+      }
+    }
+  }, [clearExistingRoutes]);
 
   const getCurrentLocation = useCallback(() => {
     if (!navigator.geolocation) {
@@ -84,6 +312,7 @@ export function MapView({ mapId }: { mapId?: string }) {
           setPosition(newPosition);
           setError(null);
           setIsLocating(false);
+          setIsUsingDefaultLocation(false);
           console.log('📍 Map location obtained and cached:', newPosition);
         },
         (err) => {
@@ -151,13 +380,15 @@ export function MapView({ mapId }: { mapId?: string }) {
     }
   }, []);
 
+  // Initialize location on component mount
   useEffect(() => {
     getCurrentLocation();
-  }, [getCurrentLocation]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run once on mount
 
   const calculateRoute = useCallback(async () => {
     if (!routeInfo.origin || !routeInfo.destination) {
-      setError('Please enter both origin and destination.');
+      setError('Please enter both origin and destination cities.');
       return;
     }
 
@@ -165,87 +396,282 @@ export function MapView({ mapId }: { mapId?: string }) {
     setError(null);
 
     try {
-      // Use Google Maps Directions API via fetch
-      const response = await fetch(
-        `https://maps.googleapis.com/maps/api/directions/json?origin=${encodeURIComponent(routeInfo.origin)}&destination=${encodeURIComponent(routeInfo.destination)}&key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}`
+      // Add "India" to the search query to improve geocoding accuracy
+      const originQuery = `${routeInfo.origin}, India`;
+      const destinationQuery = `${routeInfo.destination}, India`;
+
+      // Use OpenStreetMap Nominatim for geocoding with better parameters
+      const originResponse = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(originQuery)}&limit=1&countrycodes=in`
       );
+      const originData = await originResponse.json();
 
-      const data = await response.json();
+      const destinationResponse = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(destinationQuery)}&limit=1&countrycodes=in`
+      );
+      const destinationData = await destinationResponse.json();
 
-      if (data.status === 'OK' && data.routes.length > 0) {
-        const route = data.routes[0];
-        const leg = route.legs[0];
-
-        setRouteInfo(prev => ({
-          ...prev,
-          distance: leg.distance?.text,
-          duration: leg.duration?.text
-        }));
-        setError(null);
-      } else {
-        setError(`Unable to calculate route: ${data.status}. Please check your addresses and API key.`);
-        setRouteInfo(prev => ({ ...prev, distance: undefined, duration: undefined }));
+      if (originData.length === 0) {
+        throw new Error(`Could not find location: ${routeInfo.origin}`);
       }
-    } catch (err) {
-      setError('Failed to calculate route. Please check your API key and try again.');
+
+      if (destinationData.length === 0) {
+        throw new Error(`Could not find location: ${routeInfo.destination}`);
+      }
+
+      const origin = {
+        lat: parseFloat(originData[0].lat),
+        lng: parseFloat(originData[0].lon)
+      };
+      const destination = {
+        lat: parseFloat(destinationData[0].lat),
+        lng: parseFloat(destinationData[0].lon)
+      };
+
+      console.log('🗺️ Geocoding results:', {
+        origin: { city: routeInfo.origin, ...origin },
+        destination: { city: routeInfo.destination, ...destination }
+      });
+
+      // Add markers for origin and destination
+      if (mapRef.current) {
+        // Remove existing route markers if any
+        mapRef.current.eachLayer((layer: any) => {
+          if (layer instanceof L.Marker) {
+            const latLng = layer.getLatLng();
+            // Only remove markers that match origin or destination coordinates
+            if ((latLng.lat === origin.lat && latLng.lng === origin.lng) ||
+              (latLng.lat === destination.lat && latLng.lng === destination.lng)) {
+              layer.remove();
+            }
+          }
+        });
+
+        // Add new markers
+        L.marker([origin.lat, origin.lng])
+          .addTo(mapRef.current)
+          .bindPopup(`<b>Origin:</b> ${routeInfo.origin}`);
+
+        L.marker([destination.lat, destination.lng])
+          .addTo(mapRef.current)
+          .bindPopup(`<b>Destination:</b> ${routeInfo.destination}`);
+      }
+
+      // Store coordinates for later use
+      setRouteInfo(prev => ({
+        ...prev,
+        originCoords: origin,
+        destinationCoords: destination
+      }));
+
+      // Fetch safe routes
+      console.log('🗺️ Fetching safe routes...');
+      const safeRoutesData = await fetchSafeRoutes(origin, destination);
+      console.log('🗺️ Safe routes data received:', safeRoutesData);
+      setSafeRoutes(safeRoutesData);
+
+      // Draw routes on map
+      if (safeRoutesData.routes && safeRoutesData.routes.length > 0) {
+        console.log('🗺️ Drawing routes on map...');
+
+        // Ensure map is ready before drawing
+        const waitForMap = (attempts = 0) => {
+          if (mapRef.current) {
+            console.log('🗺️ Map ready, drawing routes now');
+            drawRoutes(safeRoutesData.routes, safeRoutesData.recommendation.recommended_route);
+          } else if (attempts < 10) {
+            console.log(`🗺️ Waiting for map to be ready... (attempt ${attempts + 1}/10)`);
+            setTimeout(() => waitForMap(attempts + 1), 500);
+          } else {
+            console.error('❌ Map not ready after 10 attempts');
+            setError('Map is not ready. Please refresh the page and try again.');
+          }
+        };
+
+        waitForMap();
+
+        // Update route info with recommended route details
+        const recommendedRoute = safeRoutesData.routes[safeRoutesData.recommendation.recommended_route];
+        if (recommendedRoute) {
+          setRouteInfo(prev => ({
+            ...prev,
+            distance: recommendedRoute.distance ? `${(recommendedRoute.distance / 1000).toFixed(1)} km` : undefined,
+            duration: recommendedRoute.duration ? `${Math.round(recommendedRoute.duration / 60)} min` : undefined
+          }));
+        }
+      } else {
+        console.warn('⚠️ No routes received from API');
+        throw new Error('No routes available for the selected cities');
+      }
+
+      setError(null);
+    } catch (err: any) {
+      console.error('❌ Route calculation error:', err);
+      setError(err.message || 'Failed to calculate route. Please check the city names and try again.');
       setRouteInfo(prev => ({ ...prev, distance: undefined, duration: undefined }));
+      setSafeRoutes(null);
+      clearExistingRoutes();
     } finally {
       setIsCalculating(false);
     }
-  }, [routeInfo.origin, routeInfo.destination]);
+  }, [routeInfo.origin, routeInfo.destination, fetchSafeRoutes, drawRoutes, clearExistingRoutes]);
 
   const clearRoute = useCallback(() => {
     setRouteInfo({ origin: '', destination: '' });
+    setSafeRoutes(null);
+    clearExistingRoutes();
+
+    // Clear markers except the current location marker
+    if (mapRef.current) {
+      mapRef.current.eachLayer((layer: any) => {
+        // Only remove markers that are not at the current position
+        if (layer instanceof L.Marker) {
+          const latLng = layer.getLatLng();
+          if (latLng.lat !== position.lat || latLng.lng !== position.lng) {
+            layer.remove();
+          }
+        }
+      });
+    }
+
     setError(null);
-  }, []);
+  }, [clearExistingRoutes, position.lat, position.lng]);
 
   const handleZoomIn = useCallback(() => {
     if (mapRef.current) {
-      const newZoom = Math.min(zoom + 1, 20);
+      const currentZoom = mapRef.current.getZoom();
+      const newZoom = Math.min(currentZoom + 1, 20);
       setZoom(newZoom);
       mapRef.current.setZoom(newZoom);
+      console.log('🔍 Zoom in:', currentZoom, '→', newZoom);
     }
-  }, [zoom]);
+  }, []);
 
   const handleZoomOut = useCallback(() => {
     if (mapRef.current) {
-      const newZoom = Math.max(zoom - 1, 1);
+      const currentZoom = mapRef.current.getZoom();
+      const newZoom = Math.max(currentZoom - 1, 1);
       setZoom(newZoom);
       mapRef.current.setZoom(newZoom);
+      console.log('🔍 Zoom out:', currentZoom, '→', newZoom);
     }
-  }, [zoom]);
-
-  const onMapLoad = useCallback((event: any) => {
-    mapRef.current = event.detail.map;
   }, []);
 
-  // Only use mapId if it's properly configured and not causing conflicts
-  const mapConfig = {
-    center: position,
-    zoom: zoom,
-    fullscreenControl: true,
-    streetViewControl: true,
-    mapTypeControl: true,
-    zoomControl: false, // Disable default zoom control since we have custom ones
-    gestureHandling: "auto" as const,
-    // Only add mapId if it's properly configured
-    ...(mapId && mapId !== 'your_map_id_here' ? { mapId } : {})
-  };
+  const onMapLoad = useCallback((map: L.Map) => {
+    console.log('🗺️ onMapLoad called with map:', map);
+    if (map && typeof map.getContainer === 'function') {
+      console.log('🗺️ Map is valid, setting reference');
+      mapRef.current = map;
+
+      // Ensure map is ready before any operations
+      setTimeout(() => {
+        if (mapRef.current) {
+          console.log('🗺️ Map reference confirmed:', mapRef.current);
+          console.log('🗺️ Map container:', mapRef.current.getContainer());
+          console.log('🗺️ Map center:', mapRef.current.getCenter());
+        } else {
+          console.error('❌ Map reference lost after timeout');
+        }
+      }, 100);
+    } else {
+      console.error('❌ Invalid map object passed to onMapLoad:', map);
+    }
+  }, []);
+
+  // Add keyboard shortcuts for zooming
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return; // Don't handle shortcuts when typing in input fields
+      }
+
+      if (e.key === '+' || e.key === '=') {
+        e.preventDefault();
+        handleZoomIn();
+      } else if (e.key === '-') {
+        e.preventDefault();
+        handleZoomOut();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleZoomIn, handleZoomOut]);
 
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full w-full overflow-hidden">
+      {/* Error Message */}
       {error && (
-        <div className="absolute top-4 left-4 right-4 z-10 p-3 text-destructive-foreground bg-destructive rounded-md shadow-lg">
-          {error}
+        <div className="absolute top-4 left-4 right-4 z-[1000] p-3 text-destructive-foreground bg-destructive rounded-md shadow-lg border border-destructive/20">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+            <span className="text-sm font-medium">{error}</span>
+          </div>
         </div>
       )}
 
+      {/* Location Status Indicator */}
+      {isUsingDefaultLocation && (
+        <div className="absolute top-4 left-4 z-[1000] p-2 bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-200 rounded-md shadow-lg border border-orange-200 dark:border-orange-800">
+          <div className="flex items-center gap-2 text-xs">
+            <Navigation className="h-3 w-3" />
+            <span className="font-medium">Showing Delhi (Default)</span>
+          </div>
+        </div>
+      )}
+
+      {/* Map Container */}
+      <div className="absolute inset-0 z-0">
+        <MapContainer
+          center={[position.lat, position.lng]}
+          zoom={zoom}
+          className="h-full w-full"
+          zoomControl={false}
+          attributionControl={false}
+          ref={(map) => {
+            if (map && !mapRef.current) {
+              console.log('🗺️ MapContainer ref callback, setting map reference');
+              mapRef.current = map;
+            }
+          }}
+        >
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
+          <Marker position={[position.lat, position.lng]}>
+            <Popup>
+              <div className="text-sm">
+                <div className="font-medium">
+                  {isUsingDefaultLocation ? 'Default Location (Delhi)' : 'Your current location'}
+                </div>
+                <div className="text-muted-foreground">
+                  Lat: {position.lat.toFixed(6)}<br />
+                  Lng: {position.lng.toFixed(6)}
+                  {isUsingDefaultLocation && (
+                    <>
+                      <br />
+                      <span className="text-orange-600 font-medium">Click "Locate Me" to get your actual location</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            </Popup>
+          </Marker>
+          <MapEventHandlers
+            onMapLoad={onMapLoad}
+            position={position}
+            setPosition={setPosition}
+          />
+        </MapContainer>
+      </div>
+
       {/* Controls - Bottom Left */}
-      <div className="absolute bottom-4 left-4 z-10 space-y-2">
+      <div className="absolute bottom-4 left-4 z-[200] space-y-2">
         <Button
           onClick={getCurrentLocation}
           size="sm"
-          className="bg-primary hover:bg-primary/90 w-full"
+          className={`${isUsingDefaultLocation ? 'bg-orange-600 hover:bg-orange-700' : 'bg-primary hover:bg-primary/90'} text-primary-foreground shadow-lg border-0`}
           disabled={isLocating}
         >
           {isLocating ? (
@@ -253,14 +679,14 @@ export function MapView({ mapId }: { mapId?: string }) {
           ) : (
             <Navigation className="h-4 w-4 mr-2" />
           )}
-          {isLocating ? 'Locating...' : 'Locate Me'}
+          {isLocating ? 'Locating...' : isUsingDefaultLocation ? 'Get My Location' : 'Locate Me'}
         </Button>
 
         <Button
           onClick={() => setShowRouteForm(!showRouteForm)}
           size="sm"
           variant="outline"
-          className="bg-background/80 backdrop-blur-sm w-full"
+          className="bg-background/95 backdrop-blur-sm shadow-lg border border-border/50"
         >
           <MapPin className="h-4 w-4 mr-2" />
           {showRouteForm ? 'Hide Route' : 'Show Route'}
@@ -269,7 +695,7 @@ export function MapView({ mapId }: { mapId?: string }) {
 
       {/* Route Form */}
       {showRouteForm && (
-        <Card className="absolute top-16 left-4 z-10 w-80 bg-background/80 backdrop-blur-sm">
+        <Card className="absolute top-4 left-4 z-[300] w-80 bg-background/95 backdrop-blur-sm shadow-xl border border-border/50">
           <CardHeader className="pb-3">
             <CardTitle className="text-lg flex items-center">
               <Route className="h-4 w-4 mr-2" />
@@ -279,24 +705,39 @@ export function MapView({ mapId }: { mapId?: string }) {
           <CardContent className="space-y-3">
             <div className="space-y-2">
               <Input
-                placeholder="From (origin)"
+                placeholder="Enter origin city"
                 value={routeInfo.origin}
                 onChange={(e) => setRouteInfo(prev => ({ ...prev, origin: e.target.value }))}
                 className="text-sm"
               />
               <Input
-                placeholder="To (destination)"
+                placeholder="Enter destination city"
                 value={routeInfo.destination}
                 onChange={(e) => setRouteInfo(prev => ({ ...prev, destination: e.target.value }))}
                 className="text-sm"
               />
             </div>
 
-            {(routeInfo.distance || routeInfo.duration) && (
-              <div className="p-3 bg-muted rounded-md text-sm">
+            {(routeInfo.distance || routeInfo.duration || safeRoutes) && (
+              <div className="p-3 bg-muted/50 rounded-md text-sm border border-border/50">
                 <div className="font-medium">Route Information:</div>
                 {routeInfo.distance && <div>Distance: {routeInfo.distance}</div>}
                 {routeInfo.duration && <div>Duration: {routeInfo.duration}</div>}
+                {safeRoutes && (
+                  <>
+                    <div className="mt-2 flex items-center gap-2">
+                      <Shield className="h-4 w-4 text-blue-500" />
+                      <span className="font-medium text-blue-500">Safety Recommendation</span>
+                    </div>
+                    <div className="text-xs mt-1">{safeRoutes.recommendation.reason}</div>
+                    {safeRoutes.routes.map((route, index) => (
+                      <div key={index} className={`mt-2 text-xs ${index === safeRoutes.recommendation.recommended_route ? 'text-blue-500' : 'text-red-500'}`}>
+                        {index === safeRoutes.recommendation.recommended_route ? '✨ Recommended Route' : 'Alternative Route'}
+                        {route.safety_rating && ` - Safety: ${route.safety_rating.toFixed(2)}`}
+                      </div>
+                    ))}
+                  </>
+                )}
               </div>
             )}
 
@@ -318,16 +759,39 @@ export function MapView({ mapId }: { mapId?: string }) {
                 Clear
               </Button>
             </div>
+
+            {/* Test API Button */}
+            <Button
+              onClick={async () => {
+                try {
+                  console.log('🧪 Testing API with Delhi coordinates...');
+                  const testData = await fetchSafeRoutes(
+                    { lat: 28.6139, lng: 77.2090 }, // Delhi
+                    { lat: 28.5355, lng: 77.3910 }  // Gurgaon
+                  );
+                  console.log('🧪 Test API response:', testData);
+                  alert(`API Test Successful! Found ${testData.routes?.length || 0} routes.`);
+                } catch (error) {
+                  console.error('🧪 Test API failed:', error);
+                  alert(`API Test Failed: ${error}`);
+                }
+              }}
+              size="sm"
+              variant="outline"
+              className="w-full"
+            >
+              Test API
+            </Button>
           </CardContent>
         </Card>
       )}
 
-      <Map
-        {...mapConfig}
-        className="h-full w-full"
-      >
-        <AdvancedMarker position={position} />
-      </Map>
+      {/* Attribution - Bottom Center */}
+      <div className="absolute bottom-2 left-1/2 transform -translate-x-1/2 z-[999]">
+        <div className="bg-background/80 backdrop-blur-sm px-2 py-1 rounded text-xs text-muted-foreground">
+          © OpenStreetMap contributors
+        </div>
+      </div>
     </div>
   );
 }

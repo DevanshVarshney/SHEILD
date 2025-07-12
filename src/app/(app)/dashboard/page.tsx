@@ -1,10 +1,9 @@
 'use client';
 
-import { APIProvider } from '@vis.gl/react-google-maps';
 import { MapView } from '@/components/map-view';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { AlertTriangle, MapPinOff, Loader2, Phone, MapPin, CheckCircle, XCircle, Clock } from 'lucide-react';
+import { AlertTriangle, Loader2, Phone, MapPin, CheckCircle, XCircle, Clock } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useAuth } from '@/components/auth-provider';
@@ -25,8 +24,6 @@ import { loadSosSettings } from '@/lib/auth';
 export default function DashboardPage() {
   const { toast } = useToast();
   const { user } = useAuth();
-  const mapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
-  const mapId = process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID;
 
   const [isSOSActive, setIsSOSActive] = useState(false);
   const [sosLoading, setSosLoading] = useState(false);
@@ -382,22 +379,7 @@ export default function DashboardPage() {
       )}
 
       <div className="flex-1 rounded-lg shadow-md border overflow-hidden">
-        {mapsApiKey ? (
-          <APIProvider apiKey={mapsApiKey}>
-            <MapView mapId={mapId} />
-          </APIProvider>
-        ) : (
-          <div className="h-full flex flex-col items-center justify-center bg-muted/50 p-4 text-center">
-            <MapPinOff className="h-16 w-16 text-muted-foreground mb-4" />
-            <Alert variant="destructive">
-              <AlertTriangle className="h-4 w-4" />
-              <AlertTitle>Map Configuration Error</AlertTitle>
-              <AlertDescription>
-                The Google Maps API key is missing. Please add your key to the <strong>.env</strong> file to display the map.
-              </AlertDescription>
-            </Alert>
-          </div>
-        )}
+        <MapView />
       </div>
     </div>
   );
