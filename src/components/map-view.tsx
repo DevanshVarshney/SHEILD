@@ -136,7 +136,64 @@ export function MapView() {
   const [isUsingDefaultLocation, setIsUsingDefaultLocation] = useState(true);
   const [safeRoutes, setSafeRoutes] = useState<SafeRoutesResponse | null>(null);
   const [routePolylines, setRoutePolylines] = useState<L.Polyline[]>([]);
+  const [showLocationMarker, setShowLocationMarker] = useState(true);
+  const [locationMarker, setLocationMarker] = useState<L.Marker | null>(null);
   const mapRef = useRef<L.Map | null>(null);
+
+  // Function to show location marker
+  const showLocationMarkerOnMap = useCallback(() => {
+    if (!mapRef.current) {
+      console.log('🗺️ Map not ready, cannot show location marker');
+      return;
+    }
+
+    // Remove existing location marker if any
+    if (locationMarker) {
+      locationMarker.remove();
+      setLocationMarker(null);
+    }
+
+    // Create and add new location marker
+    const marker = L.marker([position.lat, position.lng])
+      .addTo(mapRef.current)
+      .bindPopup(`
+        <div class="text-sm">
+          <div class="font-medium">
+            ${isUsingDefaultLocation ? 'Default Location (Delhi)' : 'Your current location'}
+          </div>
+          <div class="text-muted-foreground">
+            Lat: ${position.lat.toFixed(6)}<br />
+            Lng: ${position.lng.toFixed(6)}
+            ${isUsingDefaultLocation && (
+          '<br /><span class="text-orange-600 font-medium">Click "Locate Me" to get your actual location</span>'
+        )}
+          </div>
+        </div>
+      `);
+
+    setLocationMarker(marker);
+    setShowLocationMarker(true);
+    console.log('🗺️ Location marker shown at:', position);
+  }, [position.lat, position.lng, isUsingDefaultLocation, locationMarker]);
+
+  // Function to hide location marker
+  const hideLocationMarkerFromMap = useCallback(() => {
+    if (locationMarker) {
+      locationMarker.remove();
+      setLocationMarker(null);
+    }
+    setShowLocationMarker(false);
+    console.log('🗺️ Location marker hidden');
+  }, [locationMarker]);
+
+  // Function to toggle location marker visibility
+  const toggleLocationMarker = useCallback(() => {
+    if (showLocationMarker) {
+      hideLocationMarkerFromMap();
+    } else {
+      showLocationMarkerOnMap();
+    }
+  }, [showLocationMarker, hideLocationMarkerFromMap, showLocationMarkerOnMap]);
 
   // Function to fetch safe routes
   const fetchSafeRoutes = async (start: Position, end: Position) => {
@@ -211,7 +268,7 @@ export function MapView() {
 
     routes.forEach((route, index) => {
       const isRecommended = index === recommendedIndex;
-      const color = isRecommended ? '#3b82f6' : '#ef4444'; // blue for recommended, red for others
+      const color = isRecommended ? '#3b82f6' : '#ad0afd'; // blue for recommended, bright purple for others
       const weight = isRecommended ? 6 : 4;
       const opacity = isRecommended ? 0.8 : 0.6;
 
@@ -313,6 +370,12 @@ export function MapView() {
           setError(null);
           setIsLocating(false);
           setIsUsingDefaultLocation(false);
+
+          // Show location marker if it should be visible
+          if (showLocationMarker) {
+            showLocationMarkerOnMap();
+          }
+
           console.log('📍 Map location obtained and cached:', newPosition);
         },
         (err) => {
@@ -386,6 +449,13 @@ export function MapView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Only run once on mount
 
+  // Show location marker when map is ready and location marker should be visible
+  useEffect(() => {
+    if (mapRef.current && showLocationMarker && !locationMarker) {
+      showLocationMarkerOnMap();
+    }
+  }, [mapRef.current, showLocationMarker, locationMarker, showLocationMarkerOnMap]);
+
   const calculateRoute = useCallback(async () => {
     if (!routeInfo.origin || !routeInfo.destination) {
       setError('Please enter both origin and destination cities.');
@@ -435,17 +505,15 @@ export function MapView() {
 
       // Add markers for origin and destination
       if (mapRef.current) {
-        // Remove existing route markers if any
+        // Remove existing route markers and hide location marker
         mapRef.current.eachLayer((layer: any) => {
           if (layer instanceof L.Marker) {
-            const latLng = layer.getLatLng();
-            // Only remove markers that match origin or destination coordinates
-            if ((latLng.lat === origin.lat && latLng.lng === origin.lng) ||
-              (latLng.lat === destination.lat && latLng.lng === destination.lng)) {
-              layer.remove();
-            }
+            layer.remove();
           }
         });
+
+        // Hide location marker when showing routes
+        hideLocationMarkerFromMap();
 
         // Add new markers
         L.marker([origin.lat, origin.lng])
@@ -514,28 +582,29 @@ export function MapView() {
     } finally {
       setIsCalculating(false);
     }
-  }, [routeInfo.origin, routeInfo.destination, fetchSafeRoutes, drawRoutes, clearExistingRoutes]);
+  }, [routeInfo.origin, routeInfo.destination, fetchSafeRoutes, drawRoutes, clearExistingRoutes, hideLocationMarkerFromMap]);
 
   const clearRoute = useCallback(() => {
     setRouteInfo({ origin: '', destination: '' });
     setSafeRoutes(null);
     clearExistingRoutes();
 
-    // Clear markers except the current location marker
+    // Clear all markers and restore location marker if it should be visible
     if (mapRef.current) {
       mapRef.current.eachLayer((layer: any) => {
-        // Only remove markers that are not at the current position
         if (layer instanceof L.Marker) {
-          const latLng = layer.getLatLng();
-          if (latLng.lat !== position.lat || latLng.lng !== position.lng) {
-            layer.remove();
-          }
+          layer.remove();
         }
       });
+
+      // Restore location marker if it should be visible
+      if (showLocationMarker) {
+        showLocationMarkerOnMap();
+      }
     }
 
     setError(null);
-  }, [clearExistingRoutes, position.lat, position.lng]);
+  }, [clearExistingRoutes, showLocationMarker, showLocationMarkerOnMap]);
 
   const handleZoomIn = useCallback(() => {
     if (mapRef.current) {
@@ -639,25 +708,6 @@ export function MapView() {
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
-          <Marker position={[position.lat, position.lng]}>
-            <Popup>
-              <div className="text-sm">
-                <div className="font-medium">
-                  {isUsingDefaultLocation ? 'Default Location (Delhi)' : 'Your current location'}
-                </div>
-                <div className="text-muted-foreground">
-                  Lat: {position.lat.toFixed(6)}<br />
-                  Lng: {position.lng.toFixed(6)}
-                  {isUsingDefaultLocation && (
-                    <>
-                      <br />
-                      <span className="text-orange-600 font-medium">Click "Locate Me" to get your actual location</span>
-                    </>
-                  )}
-                </div>
-              </div>
-            </Popup>
-          </Marker>
           <MapEventHandlers
             onMapLoad={onMapLoad}
             position={position}
@@ -683,12 +733,22 @@ export function MapView() {
         </Button>
 
         <Button
+          onClick={toggleLocationMarker}
+          size="sm"
+          variant={showLocationMarker ? "default" : "outline"}
+          className={`${showLocationMarker ? 'bg-green-600 hover:bg-green-700' : 'bg-background/95 backdrop-blur-sm'} shadow-lg border border-border/50`}
+        >
+          <MapPin className="h-4 w-4 mr-2" />
+          {showLocationMarker ? 'Hide Location' : 'Show Location'}
+        </Button>
+
+        <Button
           onClick={() => setShowRouteForm(!showRouteForm)}
           size="sm"
           variant="outline"
           className="bg-background/95 backdrop-blur-sm shadow-lg border border-border/50"
         >
-          <MapPin className="h-4 w-4 mr-2" />
+          <Route className="h-4 w-4 mr-2" />
           {showRouteForm ? 'Hide Route' : 'Show Route'}
         </Button>
       </div>
@@ -731,7 +791,7 @@ export function MapView() {
                     </div>
                     <div className="text-xs mt-1">{safeRoutes.recommendation.reason}</div>
                     {safeRoutes.routes.map((route, index) => (
-                      <div key={index} className={`mt-2 text-xs ${index === safeRoutes.recommendation.recommended_route ? 'text-blue-500' : 'text-red-500'}`}>
+                      <div key={index} className={`mt-2 text-xs ${index === safeRoutes.recommendation.recommended_route ? 'text-blue-500' : 'text-[#ad0afd]'}`}>
                         {index === safeRoutes.recommendation.recommended_route ? '✨ Recommended Route' : 'Alternative Route'}
                         {route.safety_rating && ` - Safety: ${route.safety_rating.toFixed(2)}`}
                       </div>
@@ -759,29 +819,6 @@ export function MapView() {
                 Clear
               </Button>
             </div>
-
-            {/* Test API Button */}
-            <Button
-              onClick={async () => {
-                try {
-                  console.log('🧪 Testing API with Delhi coordinates...');
-                  const testData = await fetchSafeRoutes(
-                    { lat: 28.6139, lng: 77.2090 }, // Delhi
-                    { lat: 28.5355, lng: 77.3910 }  // Gurgaon
-                  );
-                  console.log('🧪 Test API response:', testData);
-                  alert(`API Test Successful! Found ${testData.routes?.length || 0} routes.`);
-                } catch (error) {
-                  console.error('🧪 Test API failed:', error);
-                  alert(`API Test Failed: ${error}`);
-                }
-              }}
-              size="sm"
-              variant="outline"
-              className="w-full"
-            >
-              Test API
-            </Button>
           </CardContent>
         </Card>
       )}
