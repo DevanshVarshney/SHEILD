@@ -1,68 +1,20 @@
 // BLE Service for SHEILD - Smart Holistic Emergency & Intelligent Location Device
-// Implements complete BLE functionality for ESP32 device communication
+// Implements complete BLE functionality for ESP32 device communication using Capacitor
 
-// TypeScript declarations for Web Bluetooth API
-declare global {
-    interface Navigator {
-        bluetooth: Bluetooth;
-    }
+import type { PluginListenerHandle } from '@capacitor/core';
+import { BleClient, type BleDevice, type BleService, type BleCharacteristic } from '@capacitor-community/bluetooth-le';
+// Use Geolocation from Capacitor Plugins for compatibility
+const { Geolocation } = (window as any).Capacitor?.Plugins || {};
 
-    interface Bluetooth {
-        getAvailability(): Promise<boolean>;
-        requestDevice(options: RequestDeviceOptions): Promise<BluetoothDevice>;
-    }
-
-    interface RequestDeviceOptions {
-        filters?: BluetoothLEScanFilter[];
-        optionalServices?: string[];
-        acceptAllDevices?: boolean;
-    }
-
-    interface BluetoothLEScanFilter {
-        name?: string;
-        namePrefix?: string;
-        services?: string[];
-        manufacturerData?: ManufacturerDataFilter[];
-    }
-
-    interface ManufacturerDataFilter {
-        companyIdentifier: number;
-        dataPrefix?: BufferSource;
-        mask?: BufferSource;
-    }
-
-    interface BluetoothDevice {
-        id: string;
-        name?: string;
-        gatt?: BluetoothRemoteGATTServer;
-        addEventListener(type: string, listener: EventListener): void;
-    }
-
-    interface BluetoothRemoteGATTServer {
-        connect(): Promise<BluetoothRemoteGATTServer>;
-        disconnect(): void;
-        connected: boolean;
-        getPrimaryService(service: string): Promise<BluetoothRemoteGATTService>;
-    }
-
-    interface BluetoothRemoteGATTService {
-        getCharacteristic(characteristic: string): Promise<BluetoothRemoteGATTCharacteristic>;
-    }
-
-    interface BluetoothRemoteGATTCharacteristic {
-        value?: DataView;
-        startNotifications(): Promise<BluetoothRemoteGATTCharacteristic>;
-        stopNotifications(): Promise<BluetoothRemoteGATTCharacteristic>;
-        writeValue(value: BufferSource): Promise<void>;
-        addEventListener(type: string, listener: EventListener): void;
-    }
-}
+// Only minimal fallback types for web Bluetooth
+// (Do not redeclare global interfaces that may conflict with browser types)
 
 export interface BLEDevice {
     id: string;
     name: string;
     rssi?: number;
     address?: string;
+    deviceId?: string; // Capacitor device ID
 }
 
 export interface BLEData {
@@ -71,6 +23,11 @@ export interface BLEData {
     status: string;
     battery?: number;
     rawData?: string;
+    location?: {
+        latitude: number;
+        longitude: number;
+        accuracy?: number;
+    };
 }
 
 export interface BLEConnectionState {
@@ -81,10 +38,15 @@ export interface BLEConnectionState {
     error?: string;
     lastData?: BLEData;
     dataHistory: BLEData[];
+    bluetoothState: 'enabled' | 'disabled' | 'unknown';
+    permissions: {
+        bluetooth: 'granted' | 'denied' | 'prompt' | 'unknown';
+        location: 'granted' | 'denied' | 'prompt' | 'unknown';
+    };
 }
 
-// BLE Configuration Constants
-const BLE_CONFIG = {
+// BLE Configuration Constants (from BLE Setup.md)
+export const BLE_CONFIG = {
     SERVICE_UUID: "4fafc201-1fb5-459e-8fcc-c5c9c331914b",
     CHARACTERISTIC_UUID: "beb5483e-36e1-4688-b7f5-ea07361b26a8",
     TARGET_DEVICE_NAME: "ESP32-THAT-PROJECT",
@@ -93,59 +55,336 @@ const BLE_CONFIG = {
     MAX_DBA_VALUE: 120,
     RECONNECT_ATTEMPTS: 3,
     RECONNECT_DELAY: 2000, // 2 seconds
+    DATA_UPDATE_INTERVAL: 100, // 100ms for real-time updates
 } as const;
 
 class BLEService {
-    private bluetooth: Bluetooth | null = null;
-    private device: BluetoothDevice | null = null;
-    private characteristic: BluetoothRemoteGATTCharacteristic | null = null;
+    private device: BLEDevice | null = null;
     private connectionState: BLEConnectionState = {
         isConnected: false,
         isScanning: false,
         isConnecting: false,
         dataHistory: [],
+        bluetoothState: 'unknown',
+        permissions: {
+            bluetooth: 'unknown',
+            location: 'unknown',
+        },
     };
     private listeners: Set<(state: BLEConnectionState) => void> = new Set();
     private reconnectAttempts = 0;
     private reconnectTimer: NodeJS.Timeout | null = null;
+    private notificationListener: (() => void) | null = null;
+    private isCapacitor = false;
 
     constructor() {
-        this.checkBluetoothSupport();
+        this.initializeBLE();
     }
 
-    // Check if Bluetooth is supported
-    private checkBluetoothSupport(): boolean {
+    // Initialize BLE service and detect platform
+    private async initializeBLE(): Promise<void> {
+        try {
+            // Check if we're running on Capacitor
+            if (typeof window !== 'undefined' && 'Capacitor' in window) {
+                this.isCapacitor = true;
+                console.log('📱 Running on Capacitor platform');
+
+                // Initialize Capacitor BLE
+                await BleClient.initialize();
+                console.log('✅ Capacitor BLE initialized');
+
+                // Check permissions and Bluetooth state
+                await this.checkPermissionsAndState();
+            } else {
+                this.isCapacitor = false;
+                console.log('🌐 Running on web platform');
+                this.checkWebBluetoothSupport();
+            }
+        } catch (error) {
+            console.error('❌ BLE initialization error:', error);
+            this.updateState({
+                error: 'Failed to initialize Bluetooth',
+                bluetoothState: 'disabled'
+            });
+        }
+    }
+
+    // Check permissions and Bluetooth state on Capacitor
+    private async checkPermissionsAndState(): Promise<void> {
+        try {
+            // Check if Bluetooth is enabled
+            const isEnabled = await BleClient.isEnabled();
+            const bluetoothState = isEnabled ? 'enabled' : 'disabled';
+
+            // For Android, permissions are handled at runtime
+            // We'll check them when actually needed
+            this.updateState({
+                bluetoothState,
+                permissions: {
+                    bluetooth: 'prompt', // Will be checked during operations
+                    location: 'prompt',  // Will be checked during operations
+                }
+            });
+
+            if (!isEnabled) {
+                console.log('⚠️ Bluetooth is disabled');
+            }
+
+        } catch (error) {
+            console.error('❌ Permission/state check error:', error);
+            this.updateState({
+                bluetoothState: 'unknown',
+                permissions: {
+                    bluetooth: 'unknown',
+                    location: 'unknown',
+                }
+            });
+        }
+    }
+
+    // Check Web Bluetooth support
+    private checkWebBluetoothSupport(): boolean {
         if (!navigator.bluetooth) {
-            console.error('❌ Bluetooth API not supported');
-            this.updateState({ error: 'Bluetooth not supported by this browser' });
+            console.error('❌ Web Bluetooth API not supported');
+            this.updateState({
+                error: 'Bluetooth not supported by this browser',
+                bluetoothState: 'disabled',
+                permissions: {
+                    bluetooth: 'denied',
+                    location: 'granted',
+                }
+            });
             return false;
         }
+        this.updateState({
+            bluetoothState: 'enabled',
+            permissions: {
+                bluetooth: 'granted',
+                location: 'granted',
+            }
+        });
         return true;
     }
 
-    // Request Bluetooth permissions and check availability
-    async requestBluetoothPermission(): Promise<boolean> {
+    // Request Web Bluetooth permission
+    private async requestWebBluetoothPermission(): Promise<boolean> {
         try {
-            if (!this.checkBluetoothSupport()) return false;
-
-            // Request Bluetooth permission
-            const available = await navigator.bluetooth.getAvailability();
-            if (!available) {
-                this.updateState({ error: 'Bluetooth is not available on this device' });
-                return false;
-            }
-
-            return true;
+            if (!this.checkWebBluetoothSupport()) return false;
+            const available = await navigator.bluetooth!.getAvailability();
+            return available;
         } catch (error) {
-            console.error('❌ Bluetooth permission error:', error);
-            this.updateState({ error: 'Failed to get Bluetooth permission' });
+            console.error('❌ Web Bluetooth permission error:', error);
             return false;
         }
     }
 
-    // Start device discovery
+    // Request Bluetooth permissions (enhanced for Android 12+)
+    async requestBluetoothPermission(): Promise<boolean> {
+        try {
+            if (this.isCapacitor) {
+                console.log('🔐 Requesting Bluetooth permissions...');
+
+                // Check if Bluetooth is enabled
+                const isEnabled = await BleClient.isEnabled();
+                if (!isEnabled) {
+                    try {
+                        console.log('🔵 Enabling Bluetooth...');
+                        await BleClient.enable();
+                        console.log('✅ Bluetooth enabled');
+                    } catch (error) {
+                        console.error('❌ Failed to enable Bluetooth:', error);
+                        this.updateState({
+                            error: 'Please enable Bluetooth in your device settings',
+                            permissions: {
+                                ...this.connectionState.permissions,
+                                bluetooth: 'denied'
+                            }
+                        });
+                        return false;
+                    }
+                }
+
+                // Try to start a scan to trigger permission request
+                // This will automatically request BLUETOOTH_SCAN and BLUETOOTH_CONNECT permissions
+                try {
+                    console.log('🔍 Testing scan to trigger permissions...');
+                    await BleClient.requestLEScan(
+                        {
+                            services: [BLE_CONFIG.SERVICE_UUID],
+                            allowDuplicates: false,
+                        },
+                        () => {
+                            // This callback won't be called during permission test
+                        }
+                    );
+
+                    // Immediately stop the test scan
+                    await BleClient.stopLEScan();
+                    console.log('✅ Bluetooth permissions granted');
+
+                    this.updateState({
+                        permissions: {
+                            ...this.connectionState.permissions,
+                            bluetooth: 'granted'
+                        }
+                    });
+
+                    return true;
+                } catch (scanError: any) {
+                    console.error('❌ Scan permission test failed:', scanError);
+
+                    // Check if it's a permission error
+                    if (scanError.message?.includes('permission') ||
+                        scanError.message?.includes('denied') ||
+                        scanError.name === 'NotAllowedError') {
+
+                        this.updateState({
+                            error: 'Bluetooth permission denied. Please grant Bluetooth permissions in device settings.',
+                            permissions: {
+                                ...this.connectionState.permissions,
+                                bluetooth: 'denied'
+                            }
+                        });
+                        return false;
+                    }
+
+                    // Other scan errors might be due to no devices found, which is OK for permission test
+                    console.log('⚠️ Scan test completed (no devices found, but permissions OK)');
+                    this.updateState({
+                        permissions: {
+                            ...this.connectionState.permissions,
+                            bluetooth: 'granted'
+                        }
+                    });
+                    return true;
+                }
+            } else {
+                return await this.requestWebBluetoothPermission();
+            }
+        } catch (error) {
+            console.error('❌ Bluetooth permission error:', error);
+            this.updateState({
+                error: 'Failed to get Bluetooth permission',
+                permissions: {
+                    ...this.connectionState.permissions,
+                    bluetooth: 'denied'
+                }
+            });
+            return false;
+        }
+    }
+
+    // Request Location permissions
+    async requestLocationPermission(): Promise<boolean> {
+        try {
+            if (this.isCapacitor && Geolocation) {
+                console.log('📍 Requesting location permissions...');
+                try {
+                    // Try to get current position to trigger permission request
+                    await Geolocation.getCurrentPosition({
+                        enableHighAccuracy: true,
+                        timeout: 5000,
+                    });
+
+                    this.updateState({
+                        permissions: {
+                            ...this.connectionState.permissions,
+                            location: 'granted'
+                        }
+                    });
+
+                    console.log('✅ Location permission granted');
+                    return true;
+                } catch (error: any) {
+                    console.error('❌ Location permission denied:', error);
+
+                    // Check if it's a permission error
+                    if (error.message?.includes('permission') ||
+                        error.message?.includes('denied') ||
+                        error.code === 1) { // PERMISSION_DENIED
+
+                        this.updateState({
+                            permissions: {
+                                ...this.connectionState.permissions,
+                                location: 'denied'
+                            }
+                        });
+                        return false;
+                    }
+
+                    // Other location errors (like timeout) don't necessarily mean permission denied
+                    console.log('⚠️ Location not available, but permission might be OK');
+                    this.updateState({
+                        permissions: {
+                            ...this.connectionState.permissions,
+                            location: 'granted'
+                        }
+                    });
+                    return true;
+                }
+            } else {
+                // Web or no Geolocation plugin
+                this.updateState({
+                    permissions: {
+                        ...this.connectionState.permissions,
+                        location: 'granted'
+                    }
+                });
+                return true;
+            }
+        } catch (error) {
+            console.error('❌ Location permission error:', error);
+            return false;
+        }
+    }
+
+    // Request all required permissions
+    async requestAllPermissions(): Promise<boolean> {
+        try {
+            if (this.isCapacitor) {
+                console.log('🔐 Requesting all Android permissions...');
+
+                // Request Bluetooth permissions first
+                const bluetoothGranted = await this.requestBluetoothPermission();
+                if (!bluetoothGranted) {
+                    this.updateState({
+                        error: 'Bluetooth permission is required for device scanning. Please grant Bluetooth permissions in device settings.',
+                        isScanning: false
+                    });
+                    return false;
+                }
+
+                // Request Location permissions (required for BLE scanning on Android 6+)
+                const locationGranted = await this.requestLocationPermission();
+                if (!locationGranted) {
+                    console.log('⚠️ Location permission not granted, but continuing...');
+                    // Location is not critical for BLE operation, so we continue
+                }
+
+                console.log('✅ All permissions requested successfully');
+                return true;
+            } else {
+                // Web platform - permissions are handled differently
+                return await this.requestWebBluetoothPermission();
+            }
+        } catch (error) {
+            console.error('❌ Permission request error:', error);
+            this.updateState({
+                error: 'Failed to request permissions',
+                isScanning: false
+            });
+            return false;
+        }
+    }
+
+    // Start device discovery (Capacitor implementation)
     async startDeviceDiscovery(): Promise<BLEDevice[]> {
-        if (!await this.requestBluetoothPermission()) {
+        // Request all permissions first
+        if (!await this.requestAllPermissions()) {
+            this.updateState({
+                error: 'Required permissions not granted. Please enable Bluetooth and Location permissions.',
+                isScanning: false
+            });
             return [];
         }
 
@@ -154,61 +393,100 @@ class BLEService {
         try {
             console.log('🔍 Starting BLE device discovery...');
 
-            const device = await navigator.bluetooth.requestDevice({
-                filters: [
-                    {
-                        name: BLE_CONFIG.TARGET_DEVICE_NAME,
-                    },
-                    {
-                        namePrefix: 'ESP32',
-                    },
-                ],
-                optionalServices: [BLE_CONFIG.SERVICE_UUID],
-                acceptAllDevices: false,
-            });
-
-            console.log('✅ Device selected:', device.name);
-
-            const bleDevice: BLEDevice = {
-                id: device.id,
-                name: device.name || 'Unknown Device',
-            };
-
-            this.updateState({
-                isScanning: false,
-                device: bleDevice,
-                error: undefined
-            });
-
-            // Automatically connect to the selected device
-            await this.connectToDevice(bleDevice);
-
-            return [bleDevice];
+            if (this.isCapacitor) {
+                return await this.startCapacitorDiscovery();
+            } else {
+                return await this.startWebDiscovery();
+            }
         } catch (error: any) {
             console.error('❌ Device discovery error:', error);
-
-            let errorMessage = 'Device discovery failed';
-            if (error.name === 'NotFoundError') {
-                errorMessage = 'No compatible devices found';
-            } else if (error.name === 'NotAllowedError') {
-                errorMessage = 'Bluetooth permission denied';
-            } else if (error.name === 'UserCancelledError') {
-                errorMessage = 'Device selection cancelled';
-            }
-
-            this.updateState({
-                isScanning: false,
-                error: errorMessage
-            });
-
+            this.handleDiscoveryError(error);
             return [];
         }
     }
 
-    // Connect to a specific device
-    async connectToDevice(bleDevice: BLEDevice): Promise<boolean> {
-        if (!this.checkBluetoothSupport()) return false;
+    // Capacitor device discovery
+    private async startCapacitorDiscovery(): Promise<BLEDevice[]> {
+        const devices: BLEDevice[] = [];
 
+        try {
+            await BleClient.requestLEScan(
+                {
+                    services: [BLE_CONFIG.SERVICE_UUID],
+                    allowDuplicates: false,
+                },
+                (result: any) => {
+                    console.log('📡 Found device:', result.device.name);
+
+                    if (result.device.name &&
+                        (result.device.name === BLE_CONFIG.TARGET_DEVICE_NAME ||
+                            result.device.name.startsWith('ESP32'))) {
+
+                        const bleDevice: BLEDevice = {
+                            id: result.device.deviceId,
+                            name: result.device.name,
+                            rssi: result.rssi,
+                            deviceId: result.device.deviceId,
+                        };
+
+                        devices.push(bleDevice);
+                    }
+                }
+            );
+
+            // Stop scanning after timeout
+            setTimeout(async () => {
+                try {
+                    await BleClient.stopLEScan();
+                    console.log('⏹️ BLE scan stopped');
+                } catch (error) {
+                    console.error('❌ Error stopping scan:', error);
+                }
+            }, BLE_CONFIG.SCAN_TIMEOUT);
+
+            this.updateState({ isScanning: false });
+
+            if (devices.length > 0) {
+                // Auto-connect to first found device
+                await this.connectToDevice(devices[0]);
+            }
+
+            return devices;
+        } catch (error) {
+            await BleClient.stopLEScan();
+            throw error;
+        }
+    }
+
+    // Web Bluetooth device discovery (fallback)
+    private async startWebDiscovery(): Promise<BLEDevice[]> {
+        const device = await navigator.bluetooth!.requestDevice({
+            filters: [
+                { name: BLE_CONFIG.TARGET_DEVICE_NAME },
+                { namePrefix: 'ESP32' },
+            ],
+            optionalServices: [BLE_CONFIG.SERVICE_UUID],
+            acceptAllDevices: false,
+        });
+
+        const bleDevice: BLEDevice = {
+            id: device.id,
+            name: device.name || 'Unknown Device',
+        };
+
+        this.updateState({
+            isScanning: false,
+            device: bleDevice,
+            error: undefined
+        });
+
+        // Auto-connect to selected device
+        await this.connectToDevice(bleDevice);
+        return [bleDevice];
+    }
+
+    // Connect to device (Capacitor implementation)
+    async connectToDevice(bleDevice: BLEDevice): Promise<boolean> {
         this.updateState({
             isConnecting: true,
             error: undefined
@@ -217,120 +495,160 @@ class BLEService {
         try {
             console.log('🔗 Connecting to device:', bleDevice.name);
 
-            // Request device with specific service
-            const device = await navigator.bluetooth.requestDevice({
-                filters: [{ name: bleDevice.name }],
-                optionalServices: [BLE_CONFIG.SERVICE_UUID],
-            });
-
-            this.device = device;
-
-            // Connect to GATT server
-            const server = await device.gatt?.connect();
-            if (!server) {
-                throw new Error('Failed to connect to GATT server');
+            if (this.isCapacitor) {
+                return await this.connectCapacitorDevice(bleDevice);
+            } else {
+                return await this.connectWebDevice(bleDevice);
             }
-
-            console.log('✅ Connected to GATT server');
-
-            // Discover services
-            const service = await server.getPrimaryService(BLE_CONFIG.SERVICE_UUID);
-            if (!service) {
-                throw new Error('Required service not found');
-            }
-
-            console.log('✅ Service discovered');
-
-            // Get characteristic
-            this.characteristic = await service.getCharacteristic(BLE_CONFIG.CHARACTERISTIC_UUID);
-            if (!this.characteristic) {
-                throw new Error('Required characteristic not found');
-            }
-
-            console.log('✅ Characteristic found');
-
-            // Enable notifications
-            await this.characteristic.startNotifications();
-            this.characteristic.addEventListener('characteristicvaluechanged', this.handleDataReceived.bind(this));
-
-            console.log('✅ Notifications enabled');
-
-            // Set up device disconnect listener
-            device.addEventListener('gattserverdisconnected', this.handleDeviceDisconnected.bind(this));
-
-            this.updateState({
-                isConnected: true,
-                isConnecting: false,
-                device: bleDevice,
-                error: undefined,
-            });
-
-            this.reconnectAttempts = 0;
-            return true;
-
-        } catch (error: any) {
+        } catch (error) {
             console.error('❌ Connection error:', error);
-
-            let errorMessage = 'Failed to connect to device';
-            if (error.name === 'NetworkError') {
-                errorMessage = 'Device is out of range or not available';
-            } else if (error.name === 'InvalidStateError') {
-                errorMessage = 'Device is already connected';
-            }
-
             this.updateState({
-                isConnected: false,
                 isConnecting: false,
-                error: errorMessage,
+                error: 'Connection failed'
             });
-
             return false;
         }
     }
 
-    // Handle incoming data from BLE device
-    private handleDataReceived(event: Event): void {
-        const target = event.target as unknown as BluetoothRemoteGATTCharacteristic;
-        const value = target.value;
-
-        if (!value) {
-            console.warn('⚠️ Received empty data');
-            return;
+    // Capacitor device connection
+    private async connectCapacitorDevice(bleDevice: BLEDevice): Promise<boolean> {
+        if (!bleDevice.deviceId) {
+            throw new Error('Device ID not available');
         }
 
+        try {
+            // Connect to device
+            await BleClient.connect(bleDevice.deviceId);
+            console.log('✅ Connected to device');
+
+            // Discover services
+            const services: BleService[] = await BleClient.getServices(bleDevice.deviceId);
+            const targetService = services.find((s: BleService) => s.uuid === BLE_CONFIG.SERVICE_UUID);
+
+            if (!targetService) {
+                throw new Error('Required service not found');
+            }
+
+            // Enable notifications directly using known UUIDs
+            await BleClient.startNotifications(
+                bleDevice.deviceId,
+                BLE_CONFIG.SERVICE_UUID,
+                BLE_CONFIG.CHARACTERISTIC_UUID,
+                (value: DataView) => {
+                    this.handleDataReceived(value);
+                }
+            );
+
+            this.device = bleDevice;
+            this.updateState({
+                isConnected: true,
+                isConnecting: false,
+                device: bleDevice,
+                error: undefined
+            });
+
+            console.log('✅ Notifications enabled');
+            return true;
+
+        } catch (error) {
+            console.error('❌ Capacitor connection error:', error);
+            throw error;
+        }
+    }
+
+    // Web Bluetooth device connection (fallback)
+    private async connectWebDevice(bleDevice: BLEDevice): Promise<boolean> {
+        // Web Bluetooth implementation (existing code)
+        const device = await navigator.bluetooth!.requestDevice({
+            filters: [{ name: bleDevice.name }],
+            optionalServices: [BLE_CONFIG.SERVICE_UUID],
+        });
+
+        const server = await device.gatt?.connect();
+        if (!server) {
+            throw new Error('Failed to connect to GATT server');
+        }
+
+        const service = await server.getPrimaryService(BLE_CONFIG.SERVICE_UUID);
+        if (!service) {
+            throw new Error('Required service not found');
+        }
+
+        const characteristic = await service.getCharacteristic(BLE_CONFIG.CHARACTERISTIC_UUID);
+        if (!characteristic) {
+            throw new Error('Required characteristic not found');
+        }
+
+        // Enable notifications
+        await characteristic.startNotifications();
+        characteristic.addEventListener('characteristicvaluechanged', (event: any) => {
+            this.handleDataReceived(event.target.value);
+        });
+
+        this.device = bleDevice;
+        this.updateState({
+            isConnected: true,
+            isConnecting: false,
+            device: bleDevice,
+            error: undefined
+        });
+
+        return true;
+    }
+
+    // Handle received data
+    private async handleDataReceived(value: DataView): Promise<void> {
         try {
             // Convert DataView to string
             const decoder = new TextDecoder('utf-8');
             const rawData = decoder.decode(value);
 
-            console.log('📊 Received BLE data:', rawData);
+            console.log('📊 Received data:', rawData);
 
-            // Parse the data using smart parser
+            // Parse data using smart parser
             const parsedData = this.smartDataParser(rawData);
 
+            // Get location if available
+            let location = undefined;
+            try {
+                const position = await Geolocation.getCurrentPosition({
+                    enableHighAccuracy: true,
+                    timeout: 5000,
+                });
+                location = {
+                    latitude: position.coords.latitude,
+                    longitude: position.coords.longitude,
+                    accuracy: position.coords.accuracy,
+                };
+            } catch (error) {
+                console.log('⚠️ Location not available:', error);
+            }
+
+            // Create BLE data object
             const bleData: BLEData = {
                 value: parsedData.value,
                 timestamp: Date.now(),
                 status: parsedData.status,
                 battery: parsedData.battery,
                 rawData: rawData,
+                location: location,
             };
 
-            // Update data history
+            // Update data buffer
             this.updateDataBuffer(bleData);
 
-            // Update state with new data
+            // Update state
             this.updateState({
                 lastData: bleData,
             });
 
         } catch (error) {
-            console.error('❌ Data parsing error:', error);
+            console.error('❌ Data processing error:', error);
             this.handleDataParsingError(error, value);
         }
     }
 
-    // Smart data parser that handles both simple string and JSON formats
+    // Smart data parser (handles both simple string and JSON formats)
     private smartDataParser(rawData: string): { value: number; status: string; battery?: number } {
         try {
             // Try to parse as JSON first
@@ -338,9 +656,9 @@ class BLEService {
 
             if (typeof jsonData === 'object' && jsonData !== null) {
                 return {
-                    value: typeof jsonData.dba === 'number' ? jsonData.dba : 0,
+                    value: parseFloat(jsonData.dba) || 0,
                     status: jsonData.status || 'ok',
-                    battery: typeof jsonData.battery === 'number' ? jsonData.battery : undefined,
+                    battery: jsonData.battery,
                 };
             }
         } catch {
@@ -348,7 +666,7 @@ class BLEService {
         }
 
         // Parse as simple numeric string
-        const numericValue = parseFloat(rawData);
+        const numericValue = parseFloat(rawData.trim());
         if (!isNaN(numericValue)) {
             return {
                 value: numericValue,
@@ -363,96 +681,80 @@ class BLEService {
         };
     }
 
-    // Update data buffer with new values
+    // Update data buffer with new data
     private updateDataBuffer(newData: BLEData): void {
-        const currentHistory = [...this.connectionState.dataHistory];
-        currentHistory.push(newData);
+        this.connectionState.dataHistory.push(newData);
 
         // Keep only the last MAX_DATA_BUFFER_SIZE items
-        if (currentHistory.length > BLE_CONFIG.MAX_DATA_BUFFER_SIZE) {
-            currentHistory.shift();
+        if (this.connectionState.dataHistory.length > BLE_CONFIG.MAX_DATA_BUFFER_SIZE) {
+            this.connectionState.dataHistory.shift();
         }
-
-        this.connectionState.dataHistory = currentHistory;
     }
 
     // Handle data parsing errors
     private handleDataParsingError(error: any, rawData: DataView): void {
-        console.error('❌ Data parsing error:', error, 'Raw data:', rawData);
+        console.error('❌ Data parsing error:', error);
+        console.error('Raw data:', rawData);
 
-        // Keep last valid value or use safe default
+        // Use last valid value or default
         const lastValidData = this.connectionState.lastData;
         if (lastValidData) {
-            console.log('🔄 Using last valid data:', lastValidData.value);
-        } else {
-            console.log('🔄 No valid data available, using default');
+            this.updateState({
+                lastData: {
+                    ...lastValidData,
+                    status: 'error',
+                    timestamp: Date.now(),
+                }
+            });
         }
     }
 
     // Handle device disconnection
     private handleDeviceDisconnected(): void {
-        console.log('🔌 Device disconnected');
+        console.log('📴 Device disconnected');
 
         this.updateState({
             isConnected: false,
-            isConnecting: false,
-            error: 'Device disconnected',
+            device: undefined,
+            error: 'Device disconnected'
         });
 
-        // Attempt to reconnect if we have a device
-        if (this.connectionState.device && this.reconnectAttempts < BLE_CONFIG.RECONNECT_ATTEMPTS) {
+        // Attempt reconnection
+        if (this.device && this.reconnectAttempts < BLE_CONFIG.RECONNECT_ATTEMPTS) {
             this.attemptReconnect();
         }
     }
 
     // Attempt to reconnect to device
     private async attemptReconnect(): Promise<void> {
+        if (!this.device) return;
+
         this.reconnectAttempts++;
-        console.log(`🔄 Attempting to reconnect (${this.reconnectAttempts}/${BLE_CONFIG.RECONNECT_ATTEMPTS})`);
-
-        this.updateState({
-            error: `Attempting to reconnect... (${this.reconnectAttempts}/${BLE_CONFIG.RECONNECT_ATTEMPTS})`,
-        });
-
-        // Clear any existing reconnect timer
-        if (this.reconnectTimer) {
-            clearTimeout(this.reconnectTimer);
-        }
+        console.log(`🔄 Attempting reconnection ${this.reconnectAttempts}/${BLE_CONFIG.RECONNECT_ATTEMPTS}`);
 
         this.reconnectTimer = setTimeout(async () => {
-            if (this.connectionState.device) {
-                const success = await this.connectToDevice(this.connectionState.device);
-                if (!success && this.reconnectAttempts < BLE_CONFIG.RECONNECT_ATTEMPTS) {
+            try {
+                await this.connectToDevice(this.device!);
+                this.reconnectAttempts = 0; // Reset on successful connection
+            } catch (error) {
+                console.error('❌ Reconnection failed:', error);
+                if (this.reconnectAttempts < BLE_CONFIG.RECONNECT_ATTEMPTS) {
                     this.attemptReconnect();
-                } else if (!success) {
-                    this.updateState({
-                        error: 'Failed to reconnect after multiple attempts',
-                    });
                 }
             }
         }, BLE_CONFIG.RECONNECT_DELAY);
     }
 
-    // Disconnect from current device
+    // Disconnect from device
     async disconnect(): Promise<void> {
-        console.log('🔌 Disconnecting from device');
-
-        // Clear reconnect timer
-        if (this.reconnectTimer) {
-            clearTimeout(this.reconnectTimer);
-            this.reconnectTimer = null;
-        }
-
         try {
-            // Stop notifications
-            if (this.characteristic) {
-                await this.characteristic.stopNotifications();
-                this.characteristic = null;
+            if (this.reconnectTimer) {
+                clearTimeout(this.reconnectTimer);
+                this.reconnectTimer = null;
             }
 
-            // Disconnect from GATT server
-            if (this.device?.gatt?.connected) {
-                await this.device.gatt.disconnect();
+            if (this.isCapacitor && this.device?.deviceId) {
+                await BleClient.disconnect(this.device.deviceId);
             }
 
             this.device = null;
@@ -462,33 +764,46 @@ class BLEService {
                 isConnected: false,
                 isConnecting: false,
                 device: undefined,
-                error: undefined,
+                error: undefined
             });
 
-            console.log('✅ Disconnected successfully');
+            console.log('✅ Disconnected from device');
         } catch (error) {
             console.error('❌ Disconnect error:', error);
         }
     }
 
-    // Send data to device (if write characteristic is available)
+    // Send data to device
     async sendData(data: string): Promise<boolean> {
-        if (!this.characteristic || !this.connectionState.isConnected) {
-            console.error('❌ Cannot send data: not connected');
+        if (!this.isConnected() || !this.device) {
             return false;
         }
 
         try {
-            const encoder = new TextEncoder();
-            const dataBuffer = encoder.encode(data);
+            if (this.isCapacitor && this.device.deviceId) {
+                // Capacitor implementation
+                const encoder = new TextEncoder();
+                const value = encoder.encode(data);
 
-            await this.characteristic.writeValue(dataBuffer);
-            console.log('📤 Data sent successfully:', data);
+                await BleClient.write(
+                    this.device.deviceId,
+                    BLE_CONFIG.SERVICE_UUID,
+                    BLE_CONFIG.CHARACTERISTIC_UUID,
+                    new DataView(value.buffer)
+                );
+            }
+
+            console.log('📤 Data sent:', data);
             return true;
         } catch (error) {
-            console.error('❌ Failed to send data:', error);
+            console.error('❌ Send data error:', error);
             return false;
         }
+    }
+
+    // Check if connected
+    private isConnected(): boolean {
+        return this.connectionState.isConnected;
     }
 
     // Get current connection state
@@ -508,14 +823,17 @@ class BLEService {
 
     // Update state and notify listeners
     private updateState(updates: Partial<BLEConnectionState>): void {
-        this.connectionState = { ...this.connectionState, ...updates };
+        this.connectionState = {
+            ...this.connectionState,
+            ...updates,
+        };
 
         // Notify all listeners
-        this.listeners.forEach(callback => {
+        this.listeners.forEach(listener => {
             try {
-                callback({ ...this.connectionState });
+                listener({ ...this.connectionState });
             } catch (error) {
-                console.error('❌ Error in state listener:', error);
+                console.error('❌ Listener error:', error);
             }
         });
     }
@@ -527,59 +845,83 @@ class BLEService {
         max: number;
         count: number;
     } {
-        const history = this.connectionState.dataHistory;
+        const data = this.connectionState.dataHistory;
 
-        if (history.length === 0) {
+        if (data.length === 0) {
             return { average: 0, min: 0, max: 0, count: 0 };
         }
 
-        const values = history.map(d => d.value);
+        const values = data.map(d => d.value);
         const sum = values.reduce((a, b) => a + b, 0);
         const average = sum / values.length;
         const min = Math.min(...values);
         const max = Math.max(...values);
 
         return {
-            average: Math.round(average * 100) / 100,
-            min: Math.round(min * 100) / 100,
-            max: Math.round(max * 100) / 100,
-            count: history.length,
+            average: Math.round(average * 10) / 10,
+            min: Math.round(min * 10) / 10,
+            max: Math.round(max * 10) / 10,
+            count: data.length,
         };
     }
 
     // Check if Bluetooth is available
     async isBluetoothAvailable(): Promise<boolean> {
-        if (!navigator.bluetooth) return false;
-
         try {
-            return await navigator.bluetooth.getAvailability();
-        } catch {
+            if (this.isCapacitor) {
+                return await BleClient.isEnabled();
+            } else {
+                return navigator.bluetooth !== undefined;
+            }
+        } catch (error) {
+            console.error('❌ Bluetooth availability check error:', error);
             return false;
         }
     }
 
-    // Get color based on sound level
+    // Get sound level color based on value
     getSoundLevelColor(value: number): string {
-        if (value < 60) return 'text-green-500';
-        if (value < 85) return 'text-yellow-500';
-        return 'text-red-500';
+        if (value < 60) return '#10B981'; // Green
+        if (value < 85) return '#F59E0B'; // Yellow
+        return '#EF4444'; // Red
     }
 
-    // Get progress percentage for sound level
+    // Get sound level progress percentage
     getSoundLevelProgress(value: number): number {
         return Math.min((value / BLE_CONFIG.MAX_DBA_VALUE) * 100, 100);
+    }
+
+    // Handle discovery errors
+    private handleDiscoveryError(error: any): void {
+        let errorMessage = 'Device discovery failed';
+
+        if (error.name === 'NotFoundError') {
+            errorMessage = 'No compatible devices found';
+        } else if (error.name === 'NotAllowedError') {
+            errorMessage = 'Bluetooth permission denied';
+        } else if (error.name === 'UserCancelledError') {
+            errorMessage = 'Device selection cancelled';
+        } else if (error.message) {
+            errorMessage = error.message;
+        }
+
+        this.updateState({
+            isScanning: false,
+            error: errorMessage
+        });
     }
 
     // Cleanup resources
     destroy(): void {
         this.disconnect();
         this.listeners.clear();
+
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
     }
 }
 
-// Create singleton instance
-export const bleService = new BLEService();
-
-// Export types and constants
-export { BLE_CONFIG };
-export type { BLEService }; 
+// Export singleton instance
+export const bleService = new BLEService(); 
