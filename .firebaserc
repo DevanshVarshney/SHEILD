@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "sheild-e613d"
+  },
+  "targets": {
+    "sheild-e613d": {
+      "storage": {
+        "default": [
+          "sheild-e613d.appspot.com"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}
