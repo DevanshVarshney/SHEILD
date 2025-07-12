@@ -1,7 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -38,12 +38,18 @@ const navItems = [
 export default function AppLayout({ children }: { children: ReactNode }) {
   const { user, initialLoading, logout } = useAuth();
   const router = useRouter();
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     if (!initialLoading && !user) {
       router.push('/login');
     }
   }, [user, initialLoading, router]);
+
+  // Close mobile menu when route changes
+  useEffect(() => {
+    setIsMobileMenuOpen(false);
+  }, [router]);
 
   if (initialLoading || !user) {
     return (
@@ -70,6 +76,10 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     }
     return '??';
   }
+
+  const handleNavItemClick = () => {
+    setIsMobileMenuOpen(false);
+  };
 
   return (
     <div className="grid min-h-screen w-full md:grid-cols-[220px_1fr] lg:grid-cols-[280px_1fr]">
@@ -99,7 +109,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       </div>
       <div className="flex flex-col">
         <header className="flex h-14 items-center gap-4 border-b bg-muted/40 px-4 lg:h-[60px] lg:px-6">
-          <Sheet>
+          <Sheet open={isMobileMenuOpen} onOpenChange={setIsMobileMenuOpen}>
             <SheetTrigger asChild>
               <Button
                 variant="outline"
@@ -115,6 +125,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
                 <Link
                   href="/"
                   className="mb-4 flex items-center gap-2 text-lg font-semibold"
+                  onClick={handleNavItemClick}
                 >
                   <ShieldIcon className="h-6 w-6 text-primary" />
                   <span>SHEILD</span>
@@ -124,6 +135,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
                     key={item.href}
                     href={item.href}
                     className="flex items-center gap-4 rounded-lg px-3 py-2 text-muted-foreground transition-all hover:text-primary"
+                    onClick={handleNavItemClick}
                   >
                     <item.icon className="h-5 w-5" />
                     {item.label}
