@@ -108,7 +108,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         </div>
       </div>
       <div className="flex flex-col">
-        <header className="flex h-14 items-center gap-4 border-b bg-muted/40 px-4 lg:h-[60px] lg:px-6 relative z-[1000]">
+        <header className="flex h-14 items-center gap-4 border-b bg-muted/40 px-4 lg:h-[60px] lg:px-6 relative z-[900]">
           <Sheet open={isMobileMenuOpen} onOpenChange={setIsMobileMenuOpen}>
             <SheetTrigger asChild>
               <Button
@@ -120,7 +120,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
                 <span className="sr-only">Toggle navigation menu</span>
               </Button>
             </SheetTrigger>
-            <SheetContent side="left" className="flex flex-col z-50">
+            <SheetContent side="left" className="flex flex-col z-[1000]">
               <nav className="grid gap-2 text-lg font-medium">
                 <Link
                   href="/"

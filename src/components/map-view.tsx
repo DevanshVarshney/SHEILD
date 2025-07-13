@@ -681,7 +681,7 @@ export function MapView() {
 
       {/* Location Status Indicator */}
       {isUsingDefaultLocation && (
-        <div className="absolute top-4 left-4 z-[1000] p-2 bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-200 rounded-md shadow-lg border border-orange-200 dark:border-orange-800">
+        <div className="absolute top-4 left-4 z-[20] p-2 bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-200 rounded-md shadow-lg border border-orange-200 dark:border-orange-800">
           <div className="flex items-center gap-2 text-xs">
             <Navigation className="h-3 w-3" />
             <span className="font-medium">Showing Delhi (Default)</span>
@@ -717,7 +717,7 @@ export function MapView() {
       </div>
 
       {/* Controls - Bottom Left */}
-      <div className="absolute bottom-4 left-4 z-[200] space-y-2">
+      <div className="absolute bottom-4 left-4 z-[40] space-y-2">
         <Button
           onClick={getCurrentLocation}
           size="sm"
@@ -749,13 +749,13 @@ export function MapView() {
           className="bg-background/95 backdrop-blur-sm shadow-lg border border-border/50"
         >
           <Route className="h-4 w-4 mr-2" />
-          {showRouteForm ? 'Hide Route' : 'Show Route'}
+          {showRouteForm ? 'Hide Route Planner' : 'Show Route Planner'}
         </Button>
       </div>
 
       {/* Route Form */}
       {showRouteForm && (
-        <Card className="absolute top-4 left-4 z-[300] w-80 bg-background/95 backdrop-blur-sm shadow-xl border border-border/50">
+        <Card className="absolute top-4 left-4 z-[40] w-80 bg-background/95 backdrop-blur-sm shadow-xl border border-border/50">
           <CardHeader className="pb-3">
             <CardTitle className="text-lg flex items-center">
               <Route className="h-4 w-4 mr-2" />
@@ -823,9 +823,9 @@ export function MapView() {
         </Card>
       )}
 
-      {/* Attribution - Bottom Center */}
-      <div className="absolute bottom-2 left-1/2 transform -translate-x-1/2 z-[999]">
-        <div className="bg-background/80 backdrop-blur-sm px-2 py-1 rounded text-xs text-muted-foreground">
+      {/* Attribution - Bottom Right */}
+      <div className="absolute bottom-2 right-2 z-[20] opacity-{10}">
+        <div className="bg-background/80 backdrop-blur-sm px-2 py-1 rounded text-xs text-muted-foreground opacity-{10}">
           © OpenStreetMap contributors
         </div>
       </div>
