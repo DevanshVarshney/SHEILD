@@ -6,6 +6,9 @@ import { BleClient, type BleDevice, type BleService, type BleCharacteristic } fr
 // Use Geolocation from Capacitor Plugins for compatibility
 const { Geolocation } = (window as any).Capacitor?.Plugins || {};
 
+// Import WiFi service
+import { wifiService, type WiFiDevice, type WiFiData } from './wifi';
+
 // Only minimal fallback types for web Bluetooth
 // (Do not redeclare global interfaces that may conflict with browser types)
 
@@ -65,10 +68,10 @@ class BLEService {
         isScanning: false,
         isConnecting: false,
         dataHistory: [],
-        bluetoothState: 'unknown',
+        bluetoothState: 'enabled', // Always enabled since we're using WiFi
         permissions: {
-            bluetooth: 'unknown',
-            location: 'unknown',
+            bluetooth: 'granted', // Always granted since we're using WiFi
+            location: 'granted'
         },
     };
     private listeners: Set<(state: BLEConnectionState) => void> = new Set();
@@ -78,7 +81,43 @@ class BLEService {
     private isCapacitor = false;
 
     constructor() {
-        this.initializeBLE();
+        // Subscribe to WiFi service state changes
+        wifiService.subscribe(this.handleWiFiStateChange.bind(this));
+    }
+
+    // Handle WiFi state changes
+    private handleWiFiStateChange(wifiState: WiFiConnectionState) {
+        // Map WiFi state to BLE state
+        this.updateState({
+            isConnected: wifiState.isConnected,
+            isScanning: wifiState.isScanning,
+            isConnecting: wifiState.isConnecting,
+            device: wifiState.device ? this.mapWiFiDeviceToBLE(wifiState.device) : undefined,
+            error: wifiState.error,
+            lastData: wifiState.lastData ? this.mapWiFiDataToBLE(wifiState.lastData) : undefined,
+            dataHistory: wifiState.dataHistory.map(this.mapWiFiDataToBLE)
+        });
+    }
+
+    // Map WiFi device to BLE device format
+    private mapWiFiDeviceToBLE(wifiDevice: WiFiDevice): BLEDevice {
+        return {
+            id: wifiDevice.id,
+            name: wifiDevice.name,
+            rssi: wifiDevice.rssi,
+            address: wifiDevice.address
+        };
+    }
+
+    // Map WiFi data to BLE data format
+    private mapWiFiDataToBLE(wifiData: WiFiData): BLEData {
+        return {
+            value: wifiData.value,
+            timestamp: wifiData.timestamp,
+            status: wifiData.status,
+            battery: wifiData.battery,
+            rawData: wifiData.rawData
+        };
     }
 
     // Initialize BLE service and detect platform
@@ -377,30 +416,13 @@ class BLEService {
         }
     }
 
-    // Start device discovery (Capacitor implementation)
+    // Start device discovery (using WiFi)
     async startDeviceDiscovery(): Promise<BLEDevice[]> {
-        // Request all permissions first
-        if (!await this.requestAllPermissions()) {
-            this.updateState({
-                error: 'Required permissions not granted. Please enable Bluetooth and Location permissions.',
-                isScanning: false
-            });
-            return [];
-        }
-
-        this.updateState({ isScanning: true, error: undefined });
-
         try {
-            console.log('🔍 Starting BLE device discovery...');
-
-            if (this.isCapacitor) {
-                return await this.startCapacitorDiscovery();
-            } else {
-                return await this.startWebDiscovery();
-            }
+            const wifiDevices = await wifiService.startDeviceDiscovery();
+            return wifiDevices.map(this.mapWiFiDeviceToBLE);
         } catch (error: any) {
-            console.error('❌ Device discovery error:', error);
-            this.handleDiscoveryError(error);
+            console.error('Device discovery error:', error);
             return [];
         }
     }
@@ -485,7 +507,7 @@ class BLEService {
         return [bleDevice];
     }
 
-    // Connect to device (Capacitor implementation)
+    // Connect to device (using WiFi)
     async connectToDevice(bleDevice: BLEDevice): Promise<boolean> {
         this.updateState({
             isConnecting: true,
@@ -745,60 +767,14 @@ class BLEService {
         }, BLE_CONFIG.RECONNECT_DELAY);
     }
 
-    // Disconnect from device
+    // Disconnect from device (using WiFi)
     async disconnect(): Promise<void> {
-        try {
-            if (this.reconnectTimer) {
-                clearTimeout(this.reconnectTimer);
-                this.reconnectTimer = null;
-            }
-
-            if (this.isCapacitor && this.device?.deviceId) {
-                await BleClient.disconnect(this.device.deviceId);
-            }
-
-            this.device = null;
-            this.reconnectAttempts = 0;
-
-            this.updateState({
-                isConnected: false,
-                isConnecting: false,
-                device: undefined,
-                error: undefined
-            });
-
-            console.log('✅ Disconnected from device');
-        } catch (error) {
-            console.error('❌ Disconnect error:', error);
-        }
+        await wifiService.disconnect();
     }
 
-    // Send data to device
+    // Send data to device (using WiFi)
     async sendData(data: string): Promise<boolean> {
-        if (!this.isConnected() || !this.device) {
-            return false;
-        }
-
-        try {
-            if (this.isCapacitor && this.device.deviceId) {
-                // Capacitor implementation
-                const encoder = new TextEncoder();
-                const value = encoder.encode(data);
-
-                await BleClient.write(
-                    this.device.deviceId,
-                    BLE_CONFIG.SERVICE_UUID,
-                    BLE_CONFIG.CHARACTERISTIC_UUID,
-                    new DataView(value.buffer)
-                );
-            }
-
-            console.log('📤 Data sent:', data);
-            return true;
-        } catch (error) {
-            console.error('❌ Send data error:', error);
-            return false;
-        }
+        return await wifiService.sendData(data);
     }
 
     // Check if connected
@@ -838,57 +814,19 @@ class BLEService {
         });
     }
 
-    // Get data statistics
-    getDataStatistics(): {
-        average: number;
-        min: number;
-        max: number;
-        count: number;
-    } {
-        const data = this.connectionState.dataHistory;
-
-        if (data.length === 0) {
-            return { average: 0, min: 0, max: 0, count: 0 };
-        }
-
-        const values = data.map(d => d.value);
-        const sum = values.reduce((a, b) => a + b, 0);
-        const average = sum / values.length;
-        const min = Math.min(...values);
-        const max = Math.max(...values);
-
-        return {
-            average: Math.round(average * 10) / 10,
-            min: Math.round(min * 10) / 10,
-            max: Math.round(max * 10) / 10,
-            count: data.length,
-        };
+    // Get data statistics (using WiFi service)
+    getDataStatistics() {
+        return wifiService.getDataStatistics();
     }
 
-    // Check if Bluetooth is available
-    async isBluetoothAvailable(): Promise<boolean> {
-        try {
-            if (this.isCapacitor) {
-                return await BleClient.isEnabled();
-            } else {
-                return navigator.bluetooth !== undefined;
-            }
-        } catch (error) {
-            console.error('❌ Bluetooth availability check error:', error);
-            return false;
-        }
-    }
-
-    // Get sound level color based on value
+    // Get sound level color (using WiFi service)
     getSoundLevelColor(value: number): string {
-        if (value < 60) return '#10B981'; // Green
-        if (value < 85) return '#F59E0B'; // Yellow
-        return '#EF4444'; // Red
+        return wifiService.getSoundLevelColor(value);
     }
 
-    // Get sound level progress percentage
+    // Get sound level progress (using WiFi service)
     getSoundLevelProgress(value: number): number {
-        return Math.min((value / BLE_CONFIG.MAX_DBA_VALUE) * 100, 100);
+        return wifiService.getSoundLevelProgress(value);
     }
 
     // Handle discovery errors
@@ -913,7 +851,7 @@ class BLEService {
 
     // Cleanup resources
     destroy(): void {
-        this.disconnect();
+        wifiService.destroy();
         this.listeners.clear();
 
         if (this.reconnectTimer) {
