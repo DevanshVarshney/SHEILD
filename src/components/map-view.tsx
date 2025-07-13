@@ -5,7 +5,7 @@ import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents, Polyline 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Search, Navigation, MapPin, Route, Plus, Minus, Loader2, AlertTriangle, Shield } from 'lucide-react';
+import { Search, Navigation, MapPin, Route, Plus, Minus, Loader2, AlertTriangle, Shield, X } from 'lucide-react';
 import * as L from 'leaflet';
 
 // Fix for default markers in Leaflet
@@ -35,6 +35,21 @@ interface SafeRoute {
   safety_rating?: number;
   distance?: number;
   duration?: number;
+  // New fields from updated API
+  name?: string;
+  safety_score?: number;
+  safety_breakdown?: {
+    maximum?: number;
+    minimum?: number;
+    overall?: number;
+    variance?: number;
+  };
+  safety_level?: string;
+  distance_km?: number;
+  duration_minutes?: number;
+  id?: number;
+  type?: string;
+  h3_indices_count?: number;
 }
 
 interface SafeRoutesResponse {
@@ -288,18 +303,35 @@ export function MapView() {
         newPolylines.push(polyline);
 
         // Add popup with safety information
-        const safetyRating = route.safety_rating || 0;
-        const distance = route.distance ? (route.distance / 1000).toFixed(1) : '?';
-        const duration = route.duration ? Math.round(route.duration / 60) : '?';
+        const safetyScore = route.safety_score ?? route.safety_breakdown?.overall;
+        const safetyLevel = route.safety_level ?? 'N/A';
+        const distance = route.distance_km ? route.distance_km.toFixed(1) : '?';
+        const duration = route.duration_minutes ? route.duration_minutes.toFixed(1) : '?';
 
         polyline.bindPopup(`
           <div class="text-sm">
             <div class="font-medium">${isRecommended ? '✨ Recommended Route' : 'Alternative Route'}</div>
-            <div>Safety Rating: ${safetyRating.toFixed(2)}</div>
+            <div>Safety: ${safetyScore !== undefined ? safetyScore.toFixed(2) : 'N/A'} (${safetyLevel})</div>
             <div>Distance: ${distance} km</div>
             <div>Duration: ${duration} min</div>
           </div>
         `);
+
+        // Add a label/marker at the midpoint of the route
+        if (latLngs.length > 1) {
+          const midIdx = Math.floor(latLngs.length / 2);
+          const midLatLng = latLngs[midIdx];
+          const labelContent = `<div style="background: white; border-radius: 6px; padding: 2px 8px; font-size: 12px; font-weight: bold; color: #222; border: 1px solid #ccc; box-shadow: 0 1px 4px rgba(0,0,0,0.08);">
+            ${safetyScore !== undefined ? safetyScore.toFixed(1) : 'N/A'} (${safetyLevel})
+          </div>`;
+          const labelIcon = L.divIcon({
+            html: labelContent,
+            className: '',
+            iconSize: [80, 24],
+            iconAnchor: [40, 12],
+          });
+          L.marker(midLatLng, { icon: labelIcon, interactive: false }).addTo(mapRef.current!);
+        }
 
         console.log(`🗺️ Route ${index} polyline added to map`);
       } else {
@@ -563,8 +595,8 @@ export function MapView() {
         if (recommendedRoute) {
           setRouteInfo(prev => ({
             ...prev,
-            distance: recommendedRoute.distance ? `${(recommendedRoute.distance / 1000).toFixed(1)} km` : undefined,
-            duration: recommendedRoute.duration ? `${Math.round(recommendedRoute.duration / 60)} min` : undefined
+            distance: recommendedRoute.distance_km ? `${recommendedRoute.distance_km.toFixed(1)} km` : undefined,
+            duration: recommendedRoute.duration_minutes ? `${Math.round(recommendedRoute.duration_minutes)} min` : undefined
           }));
         }
       } else {
@@ -756,11 +788,20 @@ export function MapView() {
       {/* Route Form */}
       {showRouteForm && (
         <Card className="absolute top-4 left-4 z-[40] w-80 bg-background/95 backdrop-blur-sm shadow-xl border border-border/50">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-lg flex items-center">
+          <CardHeader className="pb-3 flex flex-row items-center justify-between">
+            <div className="flex items-center">
               <Route className="h-4 w-4 mr-2" />
-              Route Planner
-            </CardTitle>
+              <CardTitle className="text-lg">Route Planner</CardTitle>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="ml-auto"
+              onClick={() => setShowRouteForm(false)}
+              aria-label="Close Route Planner"
+            >
+              <X className="h-5 w-5" />
+            </Button>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="space-y-2">
@@ -791,9 +832,29 @@ export function MapView() {
                     </div>
                     <div className="text-xs mt-1">{safeRoutes.recommendation.reason}</div>
                     {safeRoutes.routes.map((route, index) => (
-                      <div key={index} className={`mt-2 text-xs ${index === safeRoutes.recommendation.recommended_route ? 'text-blue-500' : 'text-[#ad0afd]'}`}>
-                        {index === safeRoutes.recommendation.recommended_route ? '✨ Recommended Route' : 'Alternative Route'}
-                        {route.safety_rating && ` - Safety: ${route.safety_rating.toFixed(2)}`}
+                      <div
+                        key={index}
+                        className={`mt-2 text-xs p-2 rounded ${index === safeRoutes.recommendation.recommended_route ? 'bg-blue-50 text-blue-700 font-semibold' : 'bg-purple-50 text-purple-700'}`}
+                      >
+                        <div>
+                          <span>
+                            {index === safeRoutes.recommendation.recommended_route
+                              ? '✨ Recommended Route'
+                              : route.name || 'Alternative Route'}
+                          </span>
+                        </div>
+                        <div>
+                          <span>Safety: {route.safety_score?.toFixed(2) ?? route.safety_breakdown?.overall?.toFixed(2) ?? 'N/A'}</span>
+                        </div>
+                        <div>
+                          <span>Level: {route.safety_level ?? 'N/A'}</span>
+                        </div>
+                        <div>
+                          <span>Distance: {route.distance_km ? `${route.distance_km.toFixed(2)} km` : 'N/A'}</span>
+                        </div>
+                        <div>
+                          <span>Duration: {route.duration_minutes ? `${route.duration_minutes.toFixed(1)} min` : 'N/A'}</span>
+                        </div>
                       </div>
                     ))}
                   </>
