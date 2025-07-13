@@ -711,7 +711,7 @@ export function MapView() {
         </div>
       )}
 
-      {/* Location Status Indicator */}
+      {/*{/* Location Status Indicator *
       {isUsingDefaultLocation && (
         <div className="absolute top-4 left-4 z-[20] p-2 bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-200 rounded-md shadow-lg border border-orange-200 dark:border-orange-800">
           <div className="flex items-center gap-2 text-xs">
@@ -719,7 +719,7 @@ export function MapView() {
             <span className="font-medium">Showing Delhi (Default)</span>
           </div>
         </div>
-      )}
+      )} */}
 
       {/* Map Container */}
       <div className="absolute inset-0 z-0">

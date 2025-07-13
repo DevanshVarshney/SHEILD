@@ -153,3 +153,8 @@
   background: rgba(255, 255, 255, 1) !important;
   color: #111827 !important;
 }
+
+/* Radix Popper Content Wrapper z-index fix */
+[data-radix-popper-content-wrapper] {
+  z-index: 1000 !important;
+}
