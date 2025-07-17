@@ -43,7 +43,14 @@ export function useBLE(): UseBLEReturn {
     useEffect(() => {
         const initializeBLE = async () => {
             try {
+                console.log('🔄 Initializing BLE service from hook...');
+
+                // Force initialization before checking availability
+                await bleService.initialize();
+
+                // Check Bluetooth availability
                 const available = await bleService.isBluetoothAvailable();
+                console.log('🔵 Bluetooth available:', available);
                 setIsBluetoothAvailable(available);
 
                 // Subscribe to state changes
@@ -71,6 +78,27 @@ export function useBLE(): UseBLEReturn {
             }
         };
     }, []);
+
+    // Check Bluetooth status periodically
+    useEffect(() => {
+        // Check Bluetooth status periodically
+        const checkBluetoothStatus = async () => {
+            try {
+                const available = await bleService.isBluetoothAvailable();
+                if (available !== isBluetoothAvailable) {
+                    console.log('🔵 Bluetooth status changed:', available);
+                    setIsBluetoothAvailable(available);
+                }
+            } catch (error) {
+                console.error('Failed to check Bluetooth status:', error);
+            }
+        };
+
+        // Then check every 5 seconds
+        const intervalId = setInterval(checkBluetoothStatus, 5000);
+
+        return () => clearInterval(intervalId);
+    }, [isBluetoothAvailable]);
 
     // Start device discovery
     const startDeviceDiscovery = useCallback(async (): Promise<BLEDevice[]> => {

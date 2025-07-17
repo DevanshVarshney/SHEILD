@@ -11,9 +11,10 @@ import {
     AlertTriangle,
     CheckCircle,
     XCircle,
-    RefreshCw,
     Activity,
-    Zap
+    Zap,
+    WifiOff,
+    Wifi
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -29,7 +30,7 @@ import { Progress } from '@/components/ui/progress';
 import { useBLE } from '@/hooks/use-ble';
 import { BLEChart } from '@/components/ble-chart';
 import { useToast } from '@/hooks/use-toast';
-import { BLE_CONFIG } from '@/lib/ble';
+import { BLE_CONFIG, bleService, type BLEDevice } from '@/lib/ble';
 
 export default function ConnectDevicePage() {
     const {
@@ -50,6 +51,8 @@ export default function ConnectDevicePage() {
     const { toast } = useToast();
     const [isManualScanning, setIsManualScanning] = useState(false);
     const [lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null);
+    const [discoveredDevices, setDiscoveredDevices] = useState<BLEDevice[]>([]);
+    const [isEnablingBluetooth, setIsEnablingBluetooth] = useState(false);
 
     // Update last update time when new data arrives
     useEffect(() => {
@@ -61,9 +64,11 @@ export default function ConnectDevicePage() {
     // Handle device discovery
     const handleStartDiscovery = async () => {
         setIsManualScanning(true);
+        setDiscoveredDevices([]); // Clear previous results
 
         try {
             const devices = await startDeviceDiscovery();
+            setDiscoveredDevices(devices);
 
             if (devices.length > 0) {
                 toast({
@@ -211,9 +216,9 @@ export default function ConnectDevicePage() {
                     <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
                         <div className="flex items-center gap-3">
                             {isBluetoothAvailable ? (
-                                <span className="material-symbols-outlined h-5 w-5 text-green-500">bluetooth</span>
+                                <Bluetooth className="h-5 w-5 text-green-500" />
                             ) : (
-                                <span className="material-symbols-outlined h-5 w-5 text-red-500">bluetooth_disabled</span>
+                                <Bluetooth className="h-5 w-5 text-red-500" />
                             )}
                             <div>
                                 <p className="font-medium">Bluetooth</p>
@@ -226,6 +231,48 @@ export default function ConnectDevicePage() {
                             {isBluetoothAvailable ? "Ready" : "Unavailable"}
                         </Badge>
                     </div>
+
+                    {/* Enable Bluetooth Button */}
+                    {!isBluetoothAvailable && (
+                        <Button
+                            onClick={async () => {
+                                setIsEnablingBluetooth(true);
+                                try {
+                                    // This will trigger the native Bluetooth enable dialog on mobile
+                                    const result = await bleService.requestBluetoothPermission();
+                                    if (result) {
+                                        toast({
+                                            title: "Bluetooth Enabled",
+                                            description: "Bluetooth has been successfully enabled."
+                                        });
+                                    } else {
+                                        toast({
+                                            title: "Bluetooth Not Enabled",
+                                            description: "Please enable Bluetooth in your device settings.",
+                                            variant: "destructive"
+                                        });
+                                    }
+                                } catch (error) {
+                                    toast({
+                                        title: "Error",
+                                        description: "Failed to enable Bluetooth.",
+                                        variant: "destructive"
+                                    });
+                                } finally {
+                                    setIsEnablingBluetooth(false);
+                                }
+                            }}
+                            className="w-full"
+                            disabled={isEnablingBluetooth}
+                        >
+                            {isEnablingBluetooth ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : (
+                                <Bluetooth className="mr-2 h-4 w-4" />
+                            )}
+                            {isEnablingBluetooth ? "Enabling..." : "Enable Bluetooth"}
+                        </Button>
+                    )}
 
                     {/* Connection Status */}
                     <div className={`flex items-center justify-between p-3 rounded-lg ${connectionStatus.bgColor}`}>
@@ -323,6 +370,38 @@ export default function ConnectDevicePage() {
                             </>
                         )}
                     </div>
+
+                    {/* Discovered Devices List */}
+                    {discoveredDevices.length > 0 && !connectionState.isConnected && (
+                        <div className="mt-4">
+                            <h4 className="font-medium mb-2">Discovered Devices</h4>
+                            <div className="space-y-2">
+                                {discoveredDevices.map((device) => (
+                                    <div
+                                        key={device.id}
+                                        className="p-3 rounded-lg border border-muted hover:border-primary cursor-pointer transition-colors"
+                                        onClick={() => connectToDevice(device)}
+                                    >
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex items-center gap-2">
+                                                <Bluetooth className="h-4 w-4 text-primary" />
+                                                <div>
+                                                    <p className="font-medium">{device.name || "Unknown Device"}</p>
+                                                    <p className="text-xs text-muted-foreground font-mono">{device.id}</p>
+                                                </div>
+                                            </div>
+                                            {device.rssi && (
+                                                <div className="flex items-center gap-1">
+                                                    <Signal className="h-4 w-4" />
+                                                    <span className="text-sm">{device.rssi} dBm</span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
 
                     {/* Device Information */}
                     {connectionState.device && (

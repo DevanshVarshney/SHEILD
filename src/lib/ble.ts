@@ -829,6 +829,49 @@ class BLEService {
         return wifiService.getSoundLevelProgress(value);
     }
 
+    // Public initialize method to ensure BLE is properly initialized
+    async initialize(): Promise<boolean> {
+        try {
+            console.log('🚀 Initializing BLE service...');
+
+            // Check if we're running on Capacitor
+            this.isCapacitor = typeof window !== 'undefined' && 'Capacitor' in window;
+
+            // Initialize BLE
+            await this.initializeBLE();
+
+            // Request permissions if on Capacitor
+            if (this.isCapacitor) {
+                await this.requestAllPermissions();
+            }
+
+            console.log('✅ BLE service initialized successfully');
+            return true;
+        } catch (error) {
+            console.error('❌ BLE initialization error:', error);
+            return false;
+        }
+    }
+
+    // Check if Bluetooth is available
+    async isBluetoothAvailable(): Promise<boolean> {
+        try {
+            if (this.isCapacitor) {
+                // For Capacitor, check if BLE is enabled
+                return await BleClient.isEnabled();
+            } else {
+                // For web, check if Web Bluetooth is supported
+                if (!navigator.bluetooth) {
+                    return false;
+                }
+                return await navigator.bluetooth.getAvailability();
+            }
+        } catch (error) {
+            console.error('❌ Bluetooth availability check error:', error);
+            return false;
+        }
+    }
+
     // Handle discovery errors
     private handleDiscoveryError(error: any): void {
         let errorMessage = 'Device discovery failed';

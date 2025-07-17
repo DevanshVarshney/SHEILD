@@ -250,7 +250,7 @@ export default function ProfilePage() {
                           <Image src={preview} alt="Profile preview" width={96} height={96} className="rounded-full object-cover w-full h-full" />
                         ) : (
                           user?.profilePictureUrl ? (
-                            <Image src={user.profilePictureUrl} alt="Current profile" width={96} height={96} className="rounded-full object-cover w-full h-full" />
+                            <Image src={user.profilePictureUrl} alt="{user.name}'Current profile picture" width={96} height={96} className="rounded-full object-cover w-full h-full" />
                           ) : (
                             <span className="text-xs text-muted-foreground text-center">Profile Photo</span>
                           )
