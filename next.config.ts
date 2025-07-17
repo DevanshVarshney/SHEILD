@@ -25,7 +25,7 @@ const nextConfig: NextConfig = {
     ],
   },
   /*Put output: 'export', for building the app for android using Capacitor */
-  // output: 'export',
+  output: 'export',
 };
 
 export default nextConfig;

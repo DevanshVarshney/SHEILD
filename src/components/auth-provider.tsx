@@ -49,7 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const handleLogin: typeof login = async (email, pass) => {
     setLoading(true);
     const result = await login(email, pass);
-    if(result.success && result.user) {
+    if (result.success && result.user) {
       setUser(result.user);
     }
     setLoading(false);
@@ -59,7 +59,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const handleSignup: typeof signup = async (name, email, pass, picture) => {
     setLoading(true);
     const result = await signup(name, email, pass, picture);
-     if(result.success && result.user) {
+    if (result.success && result.user) {
       setUser(result.user);
     }
     setLoading(false);
@@ -72,23 +72,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setLoading(false);
   };
-  
+
   const handleUpdateProfile = async (data: Partial<User> & { pictureFile?: File }) => {
     if (!user) return { success: false, error: "Not logged in" };
     const result = await updateUserProfile(user.uid, data);
     if (result.success && result.user) {
-        setUser(result.user);
+      setUser(result.user);
+      // Force refresh the Firebase user to get the latest photoURL
+      if (auth.currentUser) {
+        await auth.currentUser.reload();
+        // Update the user state with the refreshed Firebase user data
+        const refreshedUser: User = {
+          uid: auth.currentUser.uid,
+          name: auth.currentUser.displayName || '',
+          email: auth.currentUser.email || '',
+          profilePictureUrl: auth.currentUser.photoURL || undefined,
+        };
+        setUser(refreshedUser);
+      }
     }
     return result;
   };
 
   const handleChangePassword = async (oldPass: string, newPass: string) => {
-      if (!user) return { success: false, error: "Not logged in" };
-      const result = await changeUserPassword(oldPass, newPass);
-      if (result.success) {
-        await handleLogout();
-      }
-      return result;
+    if (!user) return { success: false, error: "Not logged in" };
+    const result = await changeUserPassword(oldPass, newPass);
+    if (result.success) {
+      await handleLogout();
+    }
+    return result;
   }
 
   const value = useMemo(() => ({
@@ -100,7 +112,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     initialLoading,
     updateProfile: handleUpdateProfile,
     changePassword: handleChangePassword
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [user, loading, initialLoading]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
